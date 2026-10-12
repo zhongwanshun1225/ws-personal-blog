@@ -389,6 +389,13 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     # --- 云端配置（前端读 window.__CLOUD__）---
     if cloud:
         write("assets/cloud-config.js", build_cloud_config_js(config, site_origin=site_origin))
+        # 第三方库本地化（src/vendor/ → dist/assets/vendor/），不依赖外部 CDN
+        vendor_src = os.path.join(SRC_DIR, "vendor")
+        if os.path.isdir(vendor_src):
+            for name in sorted(os.listdir(vendor_src)):
+                source = os.path.join(vendor_src, name)
+                if name.endswith(".js") and os.path.isfile(source):
+                    copy_file(source, os.path.join("assets", "vendor", name))
 
     # --- 搜索索引 ---
     search_items = [

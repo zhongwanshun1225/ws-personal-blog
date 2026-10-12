@@ -190,17 +190,23 @@ def layout(
         auth_slot = ""
 
     # ---------- 脚本 ----------
-    # 全部用 defer：执行顺序 = 文档顺序，所以 cloud-config → CDN → cloud.js 是可靠的。
+    # 全部用 defer：执行顺序 = 文档顺序，所以 cloud-config → vendor → cloud.js 是可靠的。
+    # vendor 地址可以是 http(s) 的 CDN，也可以是随站点打包的相对路径（assets/ 下）。
+    def _vendor_src(url: str) -> str:
+        if url.startswith(("http://", "https://", "//")):
+            return esc(url)
+        return f"{root}assets/{esc(url.lstrip('/'))}"
+
     script_tags = []
     if cloud:
         script_tags.append(f'<script src="{root}assets/cloud-config.js" defer></script>')
         for name in vendor or []:
             url = vendor_url(name)
             if url:
-                script_tags.append(f'<script src="{esc(url)}" defer></script>')
+                script_tags.append(f'<script src="{_vendor_src(url)}" defer></script>')
         sdk = vendor_url("sdk")
         if sdk:
-            script_tags.append(f'<script src="{esc(sdk)}" defer></script>')
+            script_tags.append(f'<script src="{_vendor_src(sdk)}" defer></script>')
         script_tags.append(f'<script src="{root}assets/cloud.js" defer></script>')
     script_tags.append(f'<script src="{root}assets/app.js" defer></script>')
     for name in scripts or []:

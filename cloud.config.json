@@ -7,8 +7,9 @@
   "publishableKey": "wbpk_4Kq5LMrPlZrJl7t1FUig3H_TJ4HAxiCt7P2ofyFqLaY5c2NYG2sCf3v",
 
   "vendor": {
-    "sdk": "https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js",
-    "marked": "https://cdn.jsdelivr.net/npm/marked@15/marked.min.js",
-    "highlight": "https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"
+    "_readme": "留空或填 http(s) 地址则用 CDN；填相对路径（如 vendor/marked.min.js）则使用随站点打包的本地文件（src/vendor/ 构建时拷到 dist/assets/vendor/），不依赖任何第三方 CDN。",
+    "sdk": "vendor/cloud-sdk.js",
+    "marked": "vendor/marked.min.js",
+    "highlight": "vendor/highlight.min.js"
   }
 }
