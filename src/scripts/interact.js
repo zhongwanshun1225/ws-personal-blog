@@ -38,11 +38,17 @@
   var inputEl = q('[data-comment-input]', root);
   var submitEl = q('[data-comment-submit]', root);
   var gateEl = q('[data-comment-gate]', root);
+  var viewsEl = q('[data-views-count]', root);
+  var replyBar = q('[data-reply-bar]', root);
+  var replyName = q('[data-reply-name]', root);
+  var replyCancel = q('[data-reply-cancel]', root);
 
   var slug = '';
   var postTitle = '';
   var inited = false;
-  var state = { likes: 0, liked: false, bookmarked: false, comments: 0 };
+  var state = { likes: 0, liked: false, bookmarked: false, comments: 0, views: 0 };
+  /* 回复目标：null = 直接评论文章；{ id, name } = 回复某条评论 */
+  var replyTarget = null;
   var profile = null;
   var busyLike = false;
   var busyBookmark = false;
@@ -87,6 +93,25 @@
 
   function renderCounts() {
     if (countEl) countEl.textContent = String(state.comments);
+    if (viewsEl) viewsEl.textContent = String(state.views);
+  }
+
+  /* 回复模式：提示条 + 输入框 placeholder + 提交按钮文案 */
+  function setReplyTarget(target) {
+    replyTarget = target || null;
+    if (replyBar) {
+      if (replyTarget) {
+        replyBar.removeAttribute('hidden');
+        if (replyName) replyName.textContent = replyTarget.name;
+      } else {
+        replyBar.setAttribute('hidden', '');
+      }
+    }
+    if (inputEl) {
+      inputEl.placeholder = replyTarget
+        ? '回复 @' + replyTarget.name + ' …'
+        : '写下你的看法…';
+    }
   }
 
   function readState() {
@@ -101,6 +126,7 @@
           state.liked = data.liked === true;
           state.bookmarked = data.bookmarked === true;
           state.comments = Number(data.comments) || 0;
+          state.views = Number(data.views) || 0;
         }
         renderActions();
         renderCounts();
@@ -110,6 +136,24 @@
         console.warn('[interact] 互动状态读取失败', err && err.message);
         renderActions();
         return state;
+      });
+  }
+
+  /* 浏览量 +1（每次进入文章页记一次；失败静默） */
+  function countView() {
+    C.db()
+      .rpc('post_view', { p_slug: slug })
+      .then(function (res) {
+        var rows = res && res.data;
+        var value = Array.isArray(rows) ? rows[0] : rows;
+        var num = typeof value === 'number' ? value : Number(value && value.post_view);
+        if (!isNaN(num) && num > 0) {
+          state.views = num;
+          renderCounts();
+        }
+      })
+      .catch(function () {
+        /* 浏览量统计失败不影响阅读 */
       });
   }
 
@@ -193,8 +237,22 @@
 
   /* ---------------- 评论 ---------------- */
 
-  function commentItem(item) {
+  function commentItem(item, replies) {
     var name = item.author_name || '匿名读者';
+    var replyBtn =
+      '<button class="comment__reply" type="button" data-comment-reply="' + item.id +
+      '" data-comment-reply-name="' + C.escapeHtml(name) + '">回复</button>';
+    var repliesHtml = '';
+    if (replies && replies.length) {
+      repliesHtml =
+        '<ul class="comment__replies">' +
+        replies
+          .map(function (child) {
+            return commentItem(child, null);
+          })
+          .join('') +
+        '</ul>';
+    }
     return (
       '<li class="comment" data-comment="' + item.id + '">' +
       '<span class="comment__avatar">' + C.escapeHtml(name.slice(0, 1).toUpperCase()) + '</span>' +
@@ -202,13 +260,39 @@
       '<div class="comment__head">' +
       '<span class="comment__name">' + C.escapeHtml(name) + '</span>' +
       '<span class="comment__time">' + C.escapeHtml(relativeTime(item.created_at)) + '</span>' +
+      replyBtn +
       (item.is_mine
         ? '<button class="comment__delete" type="button" data-comment-delete="' + item.id + '">删除</button>'
         : '') +
       '</div>' +
       '<p class="comment__text">' + C.escapeHtml(item.content).replace(/\n/g, '<br>') + '</p>' +
+      repliesHtml +
       '</div></li>'
     );
+  }
+
+  /* 平铺行 → 两级楼中楼：顶层按时间倒序，回复按时间正序挂在父评论下 */
+  function renderComments(rows) {
+    if (!rows.length) {
+      listEl.innerHTML = '<li class="comment-empty">还没有评论，来说点什么吧。</li>';
+      return;
+    }
+    var top = [];
+    var children = {};
+    rows.forEach(function (item) {
+      if (item.parent_id) {
+        (children[item.parent_id] = children[item.parent_id] || []).push(item);
+      } else {
+        top.push(item);
+      }
+    });
+    listEl.innerHTML = top
+      .map(function (item) {
+        var replies = (children[item.id] || []).slice().reverse();
+        return commentItem(item, replies);
+      })
+      .join('');
+    bindCommentActions();
   }
 
   function loadComments() {
@@ -218,10 +302,7 @@
       .then(function (res) {
         if (res && res.error) throw res.error;
         var rows = (res && res.data) || [];
-        listEl.innerHTML = rows.length
-          ? rows.map(commentItem).join('')
-          : '<li class="comment-empty">还没有评论，来说点什么吧。</li>';
-        bindDeletes();
+        renderComments(rows);
         state.comments = rows.length;
         renderCounts();
       })
@@ -229,6 +310,25 @@
         console.warn('[interact] 评论加载失败', err && err.message);
         listEl.innerHTML = '<li class="comment-empty">评论暂时加载失败，请刷新重试。</li>';
       });
+  }
+
+  function bindCommentActions() {
+    bindDeletes();
+    /* 回复按钮：未登录先去登录 */
+    qa('[data-comment-reply]', listEl).forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (!C.currentUser()) {
+          toast('登录后才能回复');
+          goLogin();
+          return;
+        }
+        setReplyTarget({
+          id: Number(btn.getAttribute('data-comment-reply')),
+          name: btn.getAttribute('data-comment-reply-name') || '',
+        });
+        if (inputEl) inputEl.focus();
+      });
+    });
   }
 
   function bindDeletes() {
@@ -275,20 +375,25 @@
       return;
     }
     if (submitEl) submitEl.disabled = true;
+    var wasReply = !!(replyTarget && replyTarget.id);
+    var payload = {
+      post_slug: slug,
+      content: content,
+      author_name: (profile && profile.nickname) || C.displayName() || '读者',
+    };
+    /* 回复模式：带上父评论 id（只允许回复顶层评论，避免层级过深） */
+    if (replyTarget && replyTarget.id) payload.parent_id = replyTarget.id;
     C.db()
       .from('comments')
-      .insert({
-        post_slug: slug,
-        content: content,
-        author_name: (profile && profile.nickname) || C.displayName() || '读者',
-      })
+      .insert(payload)
       .select()
       .then(function (res) {
         if (res && res.error) throw res.error;
         var rows = (res && res.data) || [];
         if (rows.length === 0) throw new Error('评论没有保存成功，请稍后重试');
         if (inputEl) inputEl.value = '';
-        toast('评论已发布');
+        setReplyTarget(null);
+        toast(wasReply ? '回复已发布' : '评论已发布');
         return loadComments();
       })
       .catch(function (err) {
@@ -345,6 +450,7 @@
     renderForSession();
     renderActions();
     readState();
+    countView();
     loadComments();
     loadProfile();
     return true;
@@ -353,6 +459,11 @@
   if (likeBtn) likeBtn.addEventListener('click', toggleLike);
   if (bookmarkBtn) bookmarkBtn.addEventListener('click', toggleBookmark);
   if (formEl) formEl.addEventListener('submit', submitComment);
+  if (replyCancel) {
+    replyCancel.addEventListener('click', function () {
+      setReplyTarget(null);
+    });
+  }
 
   C.onSessionChange(function () {
     if (!inited) return;

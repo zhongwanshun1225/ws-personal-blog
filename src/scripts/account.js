@@ -177,6 +177,47 @@
   }
 
   if (saveBtn) saveBtn.addEventListener('click', saveProfile);
+
+  /* 头像上传：传到云存储后回填地址，仍需点「保存资料」落库 */
+  var avatarUploadBtn = q('[data-avatar-upload]');
+  if (avatarUploadBtn) {
+    avatarUploadBtn.addEventListener('click', function () {
+      if (!window.WSBlogUpload) {
+        toast('上传模块未加载');
+        return;
+      }
+      var uid = C.currentUid();
+      if (!uid) {
+        toast('登录状态已失效，请重新登录');
+        return;
+      }
+      avatarUploadBtn.disabled = true;
+      var original = avatarUploadBtn.textContent;
+      avatarUploadBtn.textContent = '上传中…';
+      window.WSBlogUpload.pickAndUpload({
+        accept: 'image/*',
+        maxMB: 2,
+        folder: 'avatars',
+        filename: 'avatar-' + uid,
+        upsert: true,
+      })
+        .then(function (res) {
+          if (avatarInput) {
+            avatarInput.value = res.url;
+            avatarInput.dispatchEvent(new Event('input'));
+          }
+          toast('头像已上传，点「保存资料」生效');
+        })
+        .catch(function (err) {
+          toast((err && (err.message || err.error_description)) || '头像上传失败');
+        })
+        .then(function () {
+          avatarUploadBtn.disabled = false;
+          avatarUploadBtn.textContent = original;
+        });
+    });
+  }
+
   if (avatarInput) {
     avatarInput.addEventListener('input', function () {
       if (!avatarPreview) return;

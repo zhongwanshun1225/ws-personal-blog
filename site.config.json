@@ -28,8 +28,9 @@
   "nav": [
     { "label": "首页", "url": "index.html" },
     { "label": "项目", "url": "projects.html" },
-    { "label": "标签", "url": "tags.html" },
     { "label": "在线文章", "url": "posts.html" },
+    { "label": "归档", "url": "archive.html" },
+    { "label": "标签", "url": "tags.html" },
     { "label": "关于", "url": "about.html" }
   ],
 

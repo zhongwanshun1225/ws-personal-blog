@@ -34,7 +34,12 @@ for stream in (sys.stdout, sys.stderr):
         except (ValueError, OSError):
             pass
 
-from wsblog.cloudconf import build_cloud_config_js, cloud_enabled  # noqa: E402
+from wsblog.cloudconf import (  # noqa: E402
+    build_cloud_config_js,
+    cloud_enabled,
+    load_cloud_config,
+)
+from wsblog.cloudposts import fetch_published_cloud_posts  # noqa: E402
 from wsblog.content import collect_tags, load_page, load_posts, load_projects  # noqa: E402
 from wsblog.server import serve  # noqa: E402
 from wsblog.templates.layout import layout  # noqa: E402
@@ -42,6 +47,7 @@ from wsblog.templates.pages import (  # noqa: E402
     about_page,
     account_page,
     admin_page,
+    archive_page,
     cloud_post_page,
     cloud_posts_page,
     home_page,
@@ -50,6 +56,7 @@ from wsblog.templates.pages import (  # noqa: E402
     post_page,
     project_detail_page,
     projects_page,
+    related_posts_block,
     tag_page,
     tags_page,
 )
@@ -71,6 +78,7 @@ ASSET_SCRIPTS = (
     "account.js",
     "admin.js",
     "cloud-posts.js",
+    "upload.js",
 )
 
 _ANCHOR_RE = re.compile(r"<a\s|</a>")
@@ -158,8 +166,23 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     posts = [post for post in load_posts(CONTENT_DIR, include_drafts) if include_drafts or not post["draft"]]
     posts.sort(key=lambda post: (0 if post["pinned"] else 1, -post["date"].timestamp()))
 
+    # --- 云端已发布文章（构建期拉取，与静态文章合流）---
+    # 后台发的文章只存在于 cloud_posts 表；这里把它们拉下来归一化成与静态文章
+    # 同形的 dict，合并进首页 / 标签 / 搜索 / RSS / sitemap，让两套内容在全站
+    # 所有入口上保持一致。拉取失败自动降级（本次构建少一批在线文章，不报错）。
+    cloud_posts: list[dict] = []
+    if cloud:
+        cloud_posts = fetch_published_cloud_posts(
+            site_origin=site_origin,
+            publishable_key=str(load_cloud_config().get("publishableKey") or ""),
+        )
+    all_posts = sorted(
+        [*posts, *cloud_posts],
+        key=lambda post: (0 if post.get("pinned") else 1, -post["date"].timestamp()),
+    )
+
     projects = load_projects(CONTENT_DIR, include_drafts)
-    tags = collect_tags(posts)
+    tags = collect_tags(all_posts)
     about_data = load_page(CONTENT_DIR, "about")
 
     # --- 首页 ---
@@ -173,7 +196,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             current="index.html",
             canonical="/",
             cloud=cloud,
-            content=home_page(config=config, posts=posts, projects=projects, tags=tags, root=""),
+            content=home_page(config=config, posts=all_posts, projects=projects, tags=tags, root=""),
         ),
     )
 
@@ -225,6 +248,21 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         ),
     )
 
+    # --- 归档页 ---
+    write(
+        "archive.html",
+        layout(
+            config=config,
+            title="归档",
+            description="全部文章按发布时间归档。",
+            root="",
+            current="archive.html",
+            canonical="/archive.html",
+            cloud=cloud,
+            content=archive_page(config=config, posts=all_posts, root=""),
+        ),
+    )
+
     # --- 标签总览 ---
     write(
         "tags.html",
@@ -236,7 +274,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             current="tags.html",
             canonical="/tags.html",
             cloud=cloud,
-            content=tags_page(config=config, tags=tags, posts=posts, root=""),
+            content=tags_page(config=config, tags=tags, posts=all_posts, root=""),
         ),
     )
 
@@ -244,7 +282,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     if tags:
         os.makedirs(os.path.join(DIST_DIR, "tags"), exist_ok=True)
     for tag in tags:
-        tag_posts = [post for post in posts if any(slugify(t) == tag["slug"] for t in post["tags"])]
+        tag_posts = [post for post in all_posts if any(slugify(t) == tag["slug"] for t in post["tags"])]
         write(
             f"tags/{tag['slug']}.html",
             layout(
@@ -267,13 +305,46 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         prev_post = posts[index - 1] if index > 0 else None
         next_post = posts[index + 1] if index + 1 < len(posts) else None
 
+        # 相关文章：标签重合度优先；没有重合时按时间就近兜底
+        scored = []
+        for other in posts:
+            if other is post:
+                continue
+            overlap = len(set(post["tags"]) & set(other["tags"]))
+            scored.append((overlap, other))
+        if any(overlap > 0 for overlap, _ in scored):
+            ranked = sorted(scored, key=lambda pair: (-pair[0], -pair[1]["date"].timestamp()))
+        else:
+            ranked = sorted(scored, key=lambda pair: -pair[1]["date"].timestamp())
+        related = [other for _, other in ranked[:3]]
+
         article_meta = "\n".join(
             [f'<meta property="article:tag" content="{esc(tag)}">' for tag in post["tags"]]
         )
+        site_url = str(config.get("url") or "").rstrip("/")
+        json_ld = {
+            "@context": "https://schema.org",
+            "@type": "BlogPosting",
+            "headline": post["title"],
+            "datePublished": iso_date(post["date"]),
+            "author": {"@type": "Person", "name": str(config.get("author") or "")},
+            "description": post["summary"],
+            "mainEntityOfPage": f"{site_url}/{post['url']}" if site_url else post["url"],
+        }
+        if post.get("cover"):
+            json_ld["image"] = post["cover"]
         extra_head = (
             '<meta property="og:type" content="article">\n'
             f'<meta property="article:published_time" content="{iso_date(post["date"])}">\n'
-            f"{article_meta}"
+            + (
+                f'<meta property="og:image" content="{esc(post["cover"])}">\n'
+                if post.get("cover")
+                else ""
+            )
+            + f"{article_meta}\n"
+            + '<script type="application/ld+json">'
+            + json.dumps(json_ld, ensure_ascii=False, separators=(",", ":"))
+            + "</script>"
         )
 
         write(
@@ -290,7 +361,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 cloud=cloud,
                 scripts=["interact.js"],
                 content=post_page(
-                    config=config, post=post, prev_post=prev_post, next_post=next_post, root=root_prefix(1)
+                    config=config, post=post, prev_post=prev_post, next_post=next_post,
+                    related=related, root=root_prefix(1)
                 ),
             ),
         )
@@ -319,7 +391,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 root="",
                 current="",
                 cloud=True,
-                scripts=["account.js"],
+                scripts=["upload.js", "account.js"],
                 content=account_page(config=config, root=""),
             ),
         )
@@ -333,7 +405,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["cloud-markdown.js", "admin.js"],
+                scripts=["cloud-markdown.js", "upload.js", "admin.js"],
                 content=admin_page(config=config, root=""),
             ),
         )
@@ -400,7 +472,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     # --- 搜索索引 ---
     search_items = [
         {
-            "kind": "post",
+            "kind": "post" if post["type"] == "post" else "cloud_post",
             "title": post["title"],
             "url": post["url"],
             "summary": post["summary"],
@@ -408,7 +480,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             "date": iso_date(post["date"])[:10],
             "text": truncate(post["plain"], 1600),
         }
-        for post in posts
+        for post in all_posts
     ]
     search_items += [
         {
@@ -448,8 +520,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     )
 
     # --- RSS / sitemap / robots ---
-    write("feed.xml", build_feed(config, posts))
-    write("sitemap.xml", build_sitemap(config, posts=posts, projects=projects, tags=tags))
+    write("feed.xml", build_feed(config, all_posts))
+    write("sitemap.xml", build_sitemap(config, posts=all_posts, projects=projects, tags=tags))
     robots = "User-agent: *\nAllow: /\n"
     if config.get("url"):
         robots += f"Sitemap: {str(config['url']).rstrip('/')}/sitemap.xml\n"
@@ -523,6 +595,7 @@ def build_sitemap(config: dict, *, posts: list, projects: list, tags: list) -> s
     urls = [
         {"loc": "/", "priority": "1.0"},
         {"loc": "/projects.html", "priority": "0.8"},
+        {"loc": "/archive.html", "priority": "0.6"},
         {"loc": "/tags.html", "priority": "0.6"},
         {"loc": "/about.html", "priority": "0.6"},
     ]

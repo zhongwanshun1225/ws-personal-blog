@@ -19,6 +19,10 @@
     return (scope || document).querySelector(selector);
   }
 
+  function qa(selector, scope) {
+    return Array.prototype.slice.call((scope || document).querySelectorAll(selector));
+  }
+
   function escapeHtml(text) {
     return C.escapeHtml(text);
   }
@@ -166,12 +170,99 @@
             '</div>'
           : '');
     }
-    if (bodyEl) bodyEl.innerHTML = renderMarkdown(post.content_md);
+    if (bodyEl) {
+      bodyEl.innerHTML = renderMarkdown(post.content_md, {
+        tocTarget: q('[data-cloud-toc]', detailRoot),
+      });
+    }
+
+    loadPostNav(post.slug);
+    bindTocSpy();
 
     /* 交给互动模块接管（云端文章的 post_slug 统一加 cloud: 前缀） */
     if (window.WSBlogInteract) {
       window.WSBlogInteract.init('cloud:' + post.slug, post.title);
     }
+  }
+
+  /* 目录滚动高亮（与静态文章页 app.js 的行为一致） */
+  function bindTocSpy() {
+    var links = qa('.toc__link');
+    if (!links.length) return;
+    var headings = links
+      .map(function (link) {
+        return document.getElementById(link.getAttribute('href').slice(1));
+      })
+      .filter(Boolean);
+    if (!headings.length) return;
+
+    function update() {
+      var active = headings[0];
+      for (var i = 0; i < headings.length; i += 1) {
+        if (headings[i].getBoundingClientRect().top <= 130) active = headings[i];
+      }
+      links.forEach(function (link) {
+        link.classList.toggle('is-active', link.getAttribute('href') === '#' + active.id);
+      });
+    }
+
+    var ticking = false;
+    window.addEventListener(
+      'scroll',
+      function () {
+        if (ticking) return;
+        ticking = true;
+        window.requestAnimationFrame(function () {
+          update();
+          ticking = false;
+        });
+      },
+      { passive: true }
+    );
+    update();
+  }
+
+  /* 上一篇 / 下一篇：按发布时间排序的全部已发布文章里找前后位置 */
+  function loadPostNav(slug) {
+    var navEl = q('[data-cloud-postnav]', detailRoot);
+    if (!navEl) return;
+    C.db()
+      .from('cloud_posts')
+      .select('slug, title')
+      .eq('status', 'published')
+      .order('published_at', { ascending: false })
+      .limit(500)
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var rows = (res && res.data) || [];
+        var index = -1;
+        for (var i = 0; i < rows.length; i += 1) {
+          if (rows[i].slug === slug) {
+            index = i;
+            break;
+          }
+        }
+        if (index < 0) return;
+
+        function link(item, isNext) {
+          if (!item) return '';
+          return (
+            '<a class="post-nav__item' + (isNext ? ' post-nav__item--next' : '') +
+            '" href="' + C.root + 'post.html?slug=' + encodeURIComponent(item.slug) + '">' +
+            '<span class="post-nav__label">' + (isNext ? '下一篇 →' : '← 上一篇') + '</span>' +
+            '<span class="post-nav__title">' + escapeHtml(item.title) + '</span></a>'
+          );
+        }
+
+        /* 列表按时间倒序：上一篇 = 更新的（index-1），下一篇 = 更早的（index+1） */
+        var prev = link(rows[index - 1], false);
+        var next = link(rows[index + 1], true);
+        if (!prev && !next) return;
+        navEl.innerHTML = '<div class="post-nav">' + prev + next + '</div>';
+      })
+      .catch(function (err) {
+        console.warn('[cloud-posts] 上下篇加载失败', err && err.message);
+      });
   }
 
   function loadDetail() {

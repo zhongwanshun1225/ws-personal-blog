@@ -14,6 +14,8 @@ __all__ = [
     "home_page",
     "post_page",
     "post_interact_block",
+    "related_posts_block",
+    "archive_page",
     "projects_page",
     "project_detail_page",
     "about_page",
@@ -227,7 +229,7 @@ def home_page(*, config: dict, posts: list, projects: list, tags: list, root: st
 
 # ---------- 文章详情 ----------
 
-def post_page(*, config: dict, post: dict, prev_post, next_post, root: str = "../") -> str:
+def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, root: str = "../") -> str:
     options = config.get("options") or {}
     show_toc = options.get("showToc", True) is not False and len(post["toc"]) > 2
 
@@ -260,6 +262,7 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, root: str = "..
             f'<span class="post-nav__title">{esc(next_post["title"])}</span></a>'
         )
     nav_html = f'<div class="post-nav">\n  {"".join(nav_parts)}\n</div>' if nav_parts else ""
+    related_html = related_posts_block(posts=related, root=root) if related else ""
 
     updated_html = (
         f'<span class="meta-dot"></span><span class="meta-text">更新于 {_short_date(post["updated"])}</span>'
@@ -296,6 +299,7 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, root: str = "..
   <footer class="article-foot">
     <div class="chip-row">{_tag_chips(post["tags"], root)}</div>
     {nav_html}
+    {related_html}
   </footer>
   {post_interact_block(post_slug=post["slug"], post_title=post["title"], root=root, login_next=post["url"])}
 </div>"""
@@ -491,6 +495,58 @@ def tag_page(*, config: dict, tag: dict, posts: list, root: str = "../../") -> s
 
 # ---------- 404 ----------
 
+def related_posts_block(*, posts: list, root: str = "../") -> str:
+    """文章详情页底部的「相关文章」。posts 由构建期按标签相似度算好。"""
+    if not posts:
+        return ""
+    items = "\n    ".join(
+        f'<a class="related-item" href="{root}{post["url"]}">'
+        f'<span class="related-item__title">{esc(post["title"])}</span>'
+        f'<span class="related-item__meta">{_short_date(post["date"])}</span></a>'
+        for post in posts
+    )
+    return f"""<section class="related">
+  <h2 class="related__title">相关文章</h2>
+  <div class="related__list">{items}</div>
+</section>"""
+
+
+def archive_page(*, config: dict, posts: list, root: str = "") -> str:
+    """归档页：按年分组的时间轴列表。"""
+    years: dict[str, list] = {}
+    for post in posts:
+        local = post["date"].astimezone()
+        years.setdefault(str(local.year), []).append(post)
+    year_names = sorted(years, reverse=True)
+
+    year_blocks = []
+    for year in year_names:
+        items = "\n    ".join(
+            f'<a class="archive-item" href="{root}{post["url"]}">'
+            f'<span class="archive-item__date">{_short_date(post["date"])}</span>'
+            f'<span class="archive-item__title">{esc(post["title"])}</span>'
+            f'<span class="archive-item__read">{post.get("reading_time", "")} 分钟</span></a>'
+            for post in years[year]
+        )
+        year_blocks.append(
+            f'<section class="archive-year">\n'
+            f'  <h2 class="archive-year__title">{esc(year)} <span>{len(years[year])} 篇</span></h2>\n'
+            f'  <div class="archive-list">\n    {items}\n  </div>\n'
+            f"</section>"
+        )
+    body = "\n".join(year_blocks) or '<div class="empty-state">还没有文章。</div>'
+    total = len(posts)
+
+    return f"""<div class="wrap">
+  <div class="page-head">
+    <span class="eyebrow">Archive</span>
+    <h1 class="article-head__title" style="margin-top:14px">归档</h1>
+    <p class="article-head__summary" style="margin-top:18px">共 {total} 篇文章，按发布时间归档。</p>
+  </div>
+  <div class="archive">{body}</div>
+</div>"""
+
+
 def not_found_page(*, root: str = "") -> str:
     return f"""<div class="wrap" style="padding:110px 0;text-align:center">
   <div class="mono" style="font-size:4.2rem;font-weight:700;line-height:1;background:linear-gradient(120deg,#2dd4bf,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent">404</div>
@@ -528,6 +584,12 @@ _LOGIN_ICONS = {
         'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
         '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c1-3.5 3.7-5.2 7-5.2s6 1.7 7 5.2"/></svg>'
     ),
+    "eye": (
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/>'
+        '<circle cx="12" cy="12" r="3"/></svg>'
+    ),
 }
 
 
@@ -547,6 +609,9 @@ def post_interact_block(*, post_slug: str, post_title: str, root: str = "../", l
     <button class="interact__btn" type="button" data-bookmark aria-pressed="false">
       {_LOGIN_ICONS["bookmark"]}<span data-bookmark-label>收藏</span>
     </button>
+    <span class="interact__views">
+      {_LOGIN_ICONS["eye"]}<span data-views-count>0</span> 次阅读
+    </span>
   </div>
   <div class="comments">
     <div class="comments__head">
@@ -558,6 +623,10 @@ def post_interact_block(*, post_slug: str, post_title: str, root: str = "../", l
       <a class="btn btn--primary btn--sm" href="{login_href}">登录 / 注册</a>
     </div>
     <form class="comment-form" data-comment-form hidden>
+      <div class="comment-form__target" data-reply-bar hidden>
+        正在回复 <strong data-reply-name></strong>
+        <button class="comment-form__cancel" type="button" data-reply-cancel>取消</button>
+      </div>
       <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
       <div class="comment-form__foot">
         <span class="comment-form__hint">最多 1000 字</span>
@@ -728,11 +797,14 @@ def account_page(*, config: dict, root: str = "") -> str:
             <span class="field__label">昵称</span>
             <input class="field__input" type="text" maxlength="40" placeholder="怎么称呼你" data-profile-nickname>
           </label>
-          <label class="field">
-            <span class="field__label">头像地址</span>
-            <input class="field__input" type="url" maxlength="500" placeholder="https://… 留空则用昵称首字母"
-                   data-profile-avatar>
-          </label>
+          <div class="field">
+            <span class="field__label">头像地址（可直接上传）</span>
+            <div class="field__row">
+              <input class="field__input" type="url" maxlength="500" placeholder="https://… 留空则用昵称首字母"
+                     data-profile-avatar>
+              <button class="btn btn--ghost btn--sm" type="button" data-avatar-upload>上传头像</button>
+            </div>
+          </div>
           <label class="field field--full">
             <span class="field__label">个人简介</span>
             <textarea class="field__input" rows="3" maxlength="300" placeholder="一两句话介绍自己" data-profile-bio></textarea>
@@ -784,6 +856,8 @@ def admin_page(*, config: dict, root: str = "") -> str:
   <div class="admin-stats">
     <div class="admin-stat"><div class="admin-stat__value" data-stat-users>0</div><div class="admin-stat__label">注册用户</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-comments>0</div><div class="admin-stat__label">评论总数</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-today>0</div><div class="admin-stat__label">24h 新评论</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-views>0</div><div class="admin-stat__label">总阅读量</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-hidden>0</div><div class="admin-stat__label">已隐藏评论</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-likes>0</div><div class="admin-stat__label">点赞总数</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-posts>0</div><div class="admin-stat__label">在线文章</div></div>
@@ -837,6 +911,7 @@ def admin_page(*, config: dict, root: str = "") -> str:
             <button class="btn btn--primary btn--sm" type="button" data-post-save>保存草稿</button>
             <button class="btn btn--ghost btn--sm" type="button" data-post-publish>保存并发布</button>
             <button class="btn btn--ghost btn--sm" type="button" data-post-preview>预览渲染</button>
+            <button class="btn btn--ghost btn--sm" type="button" data-post-image>插图</button>
             <button class="btn btn--ghost btn--sm" type="button" data-post-reset>清空表单</button>
           </div>
         </form>
@@ -955,9 +1030,15 @@ def cloud_post_page(*, config: dict, root: str = "") -> str:
       <h1 class="article-head__title">加载中…</h1>
     </header>
   </div>
-  <article class="prose" data-cloud-body>
-    <p>正在读取文章内容…</p>
-  </article>
+  <div class="article-layout">
+    <article class="prose" data-cloud-body>
+      <p>正在读取文章内容…</p>
+    </article>
+    <aside class="toc" data-cloud-toc hidden></aside>
+  </div>
+  <footer class="article-foot">
+    <div data-cloud-postnav></div>
+  </footer>
   <section class="interact" data-interact data-post-title="">
     <div class="interact__bar">
       <button class="interact__btn" type="button" data-like aria-pressed="false">
@@ -966,6 +1047,9 @@ def cloud_post_page(*, config: dict, root: str = "") -> str:
       <button class="interact__btn" type="button" data-bookmark aria-pressed="false">
         {_LOGIN_ICONS["bookmark"]}<span data-bookmark-label>收藏</span>
       </button>
+      <span class="interact__views">
+        {_LOGIN_ICONS["eye"]}<span data-views-count>0</span> 次阅读
+      </span>
     </div>
     <div class="comments">
       <div class="comments__head">
@@ -977,6 +1061,10 @@ def cloud_post_page(*, config: dict, root: str = "") -> str:
         <a class="btn btn--primary btn--sm" href="{root}login.html?next=/posts.html">登录 / 注册</a>
       </div>
       <form class="comment-form" data-comment-form hidden>
+        <div class="comment-form__target" data-reply-bar hidden>
+          正在回复 <strong data-reply-name></strong>
+          <button class="comment-form__cancel" type="button" data-reply-cancel>取消</button>
+        </div>
         <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
         <div class="comment-form__foot">
           <span class="comment-form__hint">最多 1000 字</span>

@@ -242,6 +242,10 @@
     return cloud().database;
   }
 
+  function storage() {
+    return cloud().storage;
+  }
+
   /** 未登录跳转到登录页，返回 true 表示已拦截。 */
   function requireLogin() {
     if (currentSession) return false;
@@ -416,6 +420,7 @@
     ready: waitForSdk,
     cloud: cloud,
     db: db,
+    storage: storage,
     escapeHtml: escapeHtml,
     toast: toast,
     formatDate: formatDate,

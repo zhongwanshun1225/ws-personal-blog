@@ -44,6 +44,7 @@
   var publishBtn = q('[data-post-publish]');
   var resetBtn = q('[data-post-reset]');
   var previewBtn = q('[data-post-preview]');
+  var imageBtn = q('[data-post-image]');
   var previewBox = q('[data-post-preview-box]');
   var postsBody = q('[data-admin-posts]');
   var postCountEl = q('[data-post-count]');
@@ -135,6 +136,8 @@
       setText(q('[data-stat-likes]'), stats.likes || 0);
       setText(q('[data-stat-posts]'), stats.posts || 0);
       setText(q('[data-stat-drafts]'), stats.drafts || 0);
+      setText(q('[data-stat-today]'), stats.today_comments || 0);
+      setText(q('[data-stat-views]'), Number(stats.views || 0).toLocaleString());
       return stats;
     });
   }
@@ -225,6 +228,50 @@
     });
   }
   if (resetBtn) resetBtn.addEventListener('click', resetForm);
+
+  /* ---------------- 插入图片（上传到云存储） ---------------- */
+
+  var imageBusy = false;
+
+  function insertAtCursor(field, text) {
+    if (!field) return;
+    var start = field.selectionStart || 0;
+    var end = field.selectionEnd || 0;
+    var before = field.value.slice(0, start);
+    var after = field.value.slice(end);
+    var pad = before && !/\n$/.test(before) ? '\n' : '';
+    field.value = before + pad + text + after;
+    var pos = (before + pad + text).length;
+    field.focus();
+    field.setSelectionRange(pos, pos);
+  }
+
+  if (imageBtn) {
+    imageBtn.addEventListener('click', function () {
+      if (!window.WSBlogUpload) {
+        toast('上传模块未加载');
+        return;
+      }
+      if (imageBusy) return;
+      imageBusy = true;
+      imageBtn.disabled = true;
+      var original = imageBtn.textContent;
+      imageBtn.textContent = '上传中…';
+      window.WSBlogUpload.pickAndUpload({ accept: 'image/*', maxMB: 8, folder: 'blog' })
+        .then(function (res) {
+          insertAtCursor(fieldContent, '![](' + res.url + ')\n');
+          toast('图片已插入正文');
+        })
+        .catch(function (err) {
+          toast((err && (err.message || err.error_description)) || '图片上传失败');
+        })
+        .then(function () {
+          imageBusy = false;
+          imageBtn.disabled = false;
+          imageBtn.textContent = original;
+        });
+    });
+  }
 
   if (previewBtn) {
     previewBtn.addEventListener('click', function () {
@@ -359,9 +406,16 @@
 
   function commentRow(item) {
     var hidden = item.status && item.status !== 'visible';
+    var parentReply = '';
+    if (item.parent_id) {
+      var parent = (allComments || []).find(function (row) { return row.id === item.parent_id; });
+      parentReply = '<div class="admin-cell__sub">↩ 回复 @' +
+        esc((parent && parent.author_name) || '#' + item.parent_id) + '</div>';
+    }
     return (
       '<tr data-comment-row="' + esc(item.id) + '">' +
       '<td><div class="admin-cell__title">' + esc(item.author_name || '匿名读者') + '</div>' +
+      parentReply +
       '<div class="admin-cell__sub mono">' + esc(item.post_slug) + '</div></td>' +
       '<td class="admin-cell__text">' + esc(item.content) + '</td>' +
       '<td class="admin-cell__sub">' + esc(C.formatDateTime(item.created_at)) + '</td>' +
@@ -419,7 +473,7 @@
 
   function loadComments() {
     return api(
-      C.db().from('comments').select('id, post_slug, author_name, content, status, created_at').order('created_at', { ascending: false }).limit(300),
+      C.db().from('comments').select('id, parent_id, post_slug, author_name, content, status, created_at').order('created_at', { ascending: false }).limit(300),
       '评论加载失败'
     ).then(function (rows) {
       allComments = rows || [];

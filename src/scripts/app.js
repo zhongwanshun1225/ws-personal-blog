@@ -514,6 +514,16 @@
     targets.forEach(function (t) { observer.observe(t); });
   })();
 
+  /* ================= 移动端目录折叠 ================= */
+  (function () {
+    doc.addEventListener('click', function (e) {
+      var title = e.target.closest('.toc__title');
+      if (!title) return;
+      var toc = title.closest('.toc');
+      if (toc) toc.classList.toggle('is-open');
+    });
+  })();
+
   /* ================= 图片点击放大 ================= */
   (function () {
     doc.addEventListener('click', function (e) {

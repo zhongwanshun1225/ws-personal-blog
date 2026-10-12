@@ -174,7 +174,41 @@
     });
   }
 
-  function renderMarkdown(markdown) {
+  /* 从渲染结果里收集 h2/h3，生成与静态文章同款的目录 */
+  function buildToc(root, target, title) {
+    if (!target) return;
+    var items = [];
+    Array.prototype.forEach.call(root.querySelectorAll('h2, h3'), function (heading) {
+      var depth = Number(heading.tagName.slice(1));
+      if (depth < 2 || depth > 3) return;
+      items.push({
+        id: heading.id,
+        text: heading.textContent.replace(/#+$/, '').trim(),
+        depth: depth,
+      });
+    });
+    /* 目录少于 3 条时意义不大，保持隐藏 */
+    if (items.length < 3) {
+      target.setAttribute('hidden', '');
+      target.innerHTML = '';
+      return;
+    }
+    target.removeAttribute('hidden');
+    target.innerHTML =
+      '<div class="toc__title">' + escapeHtml(title || 'On this page') + '</div>' +
+      '<ul class="toc__list">' +
+      items
+        .map(function (item) {
+          return (
+            '<li><a class="toc__link" data-depth="' + item.depth + '" href="#' +
+            escapeHtml(item.id) + '">' + escapeHtml(item.text) + '</a></li>'
+          );
+        })
+        .join('') +
+      '</ul>';
+  }
+
+  function renderMarkdown(markdown, options) {
     usedIds = {};
     var source = String(markdown || '');
     if (!window.marked) return '<p>' + escapeHtml(source).replace(/\n/g, '<br>') + '</p>';
@@ -183,6 +217,8 @@
     holder.innerHTML = html;
     sanitize(holder);
     decorate(holder);
+    var opts = options || {};
+    if (opts.tocTarget) buildToc(holder, opts.tocTarget, opts.tocTitle);
     return holder.innerHTML;
   }
 
