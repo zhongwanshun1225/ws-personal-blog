@@ -1,0 +1,461 @@
+/**
+ * 云端能力核心层。
+ *
+ * 职责：加载并初始化 WorkBuddy 云服务 SDK（CDN 全局形式），
+ * 对外提供会话 / 登录 / 登出 / 管理员判定 / 数据库访问，以及顶栏登录态渲染。
+ *
+ * 依赖（由 layout 注入，defer 顺序保证可用）：
+ *   assets/cloud-config.js  → window.__CLOUD__
+ *   <CDN> index.global.js   → window.WorkBuddyCloud
+ */
+
+(function () {
+  'use strict';
+
+  var cfg = window.__CLOUD__;
+  if (!cfg || !cfg.endpoint || !cfg.publishableKey) {
+    console.warn('[WSBlogCloud] 缺少云端配置，登录相关功能不可用');
+    return;
+  }
+
+  var ROOT = (typeof window.__ROOT__ === 'string' ? window.__ROOT__ : '') || '';
+  var client = null;
+  var sdkReady = null;
+  var sessionListeners = [];
+  var currentSession = null;
+  var adminFlag = null; /* null = 未知，true/false = 已判定 */
+  var identity = 'user'; /* 当前使用的身份：'user' | 'admin' */
+  var booted = false; /* 会话恢复完成前不渲染顶栏，避免「登录/注册」闪一下又变成用户菜单 */
+
+  var IDENTITY_KEY = 'wsblog.identity';
+
+  function readStoredIdentity() {
+    try {
+      return window.localStorage.getItem(IDENTITY_KEY) === 'admin' ? 'admin' : 'user';
+    } catch (err) {
+      return 'user';
+    }
+  }
+
+  function storeIdentity(value) {
+    identity = value === 'admin' ? 'admin' : 'user';
+    try {
+      window.localStorage.setItem(IDENTITY_KEY, identity);
+    } catch (err) {
+      /* 隐私模式等场景下静默失败，不影响本次会话 */
+    }
+  }
+
+  identity = readStoredIdentity();
+
+  /* ---------------- 基础工具 ---------------- */
+
+  function escapeHtml(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function toast(message) {
+    if (typeof window.__wsToast === 'function') {
+      window.__wsToast(message);
+      return;
+    }
+    var el = document.querySelector('[data-toast]');
+    if (!el) return;
+    el.textContent = message;
+    el.setAttribute('data-show', '');
+    clearTimeout(toast.__t);
+    toast.__t = setTimeout(function () {
+      el.removeAttribute('data-show');
+    }, 2200);
+  }
+
+  function formatDate(value) {
+    if (!value) return '';
+    var d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return '';
+    function pad(n) {
+      return n < 10 ? '0' + n : String(n);
+    }
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function formatDateTime(value) {
+    if (!value) return '';
+    var d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return '';
+    var date = formatDate(d);
+    function pad(n) {
+      return n < 10 ? '0' + n : String(n);
+    }
+    return date + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  /* ---------------- SDK 加载与初始化 ---------------- */
+
+  function waitForSdk(timeoutMs) {
+    if (sdkReady) return sdkReady;
+    sdkReady = new Promise(function (resolve, reject) {
+      var started = Date.now();
+      var limit = timeoutMs || 15000;
+      (function poll() {
+        if (typeof window.WorkBuddyCloud !== 'undefined') {
+          resolve(window.WorkBuddyCloud);
+          return;
+        }
+        if (Date.now() - started > limit) {
+          reject(new Error('云端 SDK 加载超时，请检查网络后刷新重试'));
+          return;
+        }
+        setTimeout(poll, 60);
+      })();
+    });
+    return sdkReady;
+  }
+
+  function cloud() {
+    if (client) return client;
+    var sdk = window.WorkBuddyCloud;
+    if (!sdk) throw new Error('云端 SDK 尚未就绪');
+    client = sdk.createWorkBuddyCloud({
+      endpoint: cfg.endpoint,
+      oauthRelayBaseUrl: cfg.oauthRelayBaseUrl,
+      publishableKey: cfg.publishableKey,
+    });
+    return client;
+  }
+
+  /* ---------------- 会话 ---------------- */
+
+  function notify() {
+    booted = true;
+    for (var i = 0; i < sessionListeners.length; i++) {
+      try {
+        sessionListeners[i](currentSession, adminFlag);
+      } catch (err) {
+        console.error('[WSBlogCloud] 会话回调异常', err);
+      }
+    }
+  }
+
+  function onSessionChange(cb) {
+    sessionListeners.push(cb);
+    if (booted) cb(currentSession, adminFlag);
+  }
+
+  function getSession() {
+    return Promise.resolve()
+      .then(function () {
+        return cloud().auth.getSession();
+      })
+      .then(function (res) {
+        currentSession = (res && res.data) || null;
+        return currentSession;
+      })
+      .catch(function (err) {
+        console.warn('[WSBlogCloud] 读取会话失败', err && err.message);
+        currentSession = null;
+        return null;
+      });
+  }
+
+  function getUser() {
+    return Promise.resolve()
+      .then(function () {
+        return cloud().auth.getUser();
+      })
+      .then(function (res) {
+        return (res && res.data && res.data.user) || null;
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
+  function isAdmin() {
+    return Promise.resolve()
+      .then(function () {
+        return cloud().database.rpc('is_admin');
+      })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        adminFlag = res && res.data === true;
+        return adminFlag;
+      })
+      .catch(function (err) {
+        console.warn('[WSBlogCloud] 管理员判定失败', err && err.message);
+        adminFlag = false;
+        return false;
+      });
+  }
+
+  /** 刷新会话 + 管理员标记，并通知订阅者。 */
+  function refresh() {
+    return getSession()
+      .then(function (session) {
+        if (!session) {
+          adminFlag = false;
+          notify();
+          return null;
+        }
+        return isAdmin().then(function () {
+          notify();
+          return session;
+        });
+      })
+      .catch(function () {
+        adminFlag = false;
+        notify();
+        return null;
+      });
+  }
+
+  function signInWithPassword(email, password) {
+    return cloud().auth.signInWithPassword({ email: email, password: password });
+  }
+
+  function sendOtp(payload) {
+    return cloud().auth.sendOtp(payload);
+  }
+
+  function verifyOtp(payload) {
+    return cloud().auth.verifyOtp(payload);
+  }
+
+  function signOut() {
+    return Promise.resolve()
+      .then(function () {
+        return cloud().auth.signOut();
+      })
+      .then(function () {
+        currentSession = null;
+        adminFlag = false;
+        notify();
+      });
+  }
+
+  function db() {
+    return cloud().database;
+  }
+
+  /** 未登录跳转到登录页，返回 true 表示已拦截。 */
+  function requireLogin() {
+    if (currentSession) return false;
+    location.href = ROOT + 'login.html?next=' + encodeURIComponent(location.pathname + location.search);
+    return true;
+  }
+
+  function currentUser() {
+    return (currentSession && currentSession.user) || null;
+  }
+
+  function currentUid() {
+    var user = currentUser();
+    if (!user) return '';
+    return user.id || user.uid || user.sub || user.userId || '';
+  }
+
+  /** 展示用名称：优先资料页昵称，其次邮箱前缀。 */
+  function displayName() {
+    var user = currentUser();
+    if (!user) return '';
+    var email = user.email || user.phone || '';
+    var local = email.indexOf('@') > 0 ? email.split('@')[0] : email;
+    return user.user_metadata && user.user_metadata.nickname
+      ? user.user_metadata.nickname
+      : local;
+  }
+
+  /** 当前是否处于「管理员身份」。必须同时满足白名单 + 主动选择管理员身份。 */
+  function isAdminMode() {
+    return adminFlag === true && identity === 'admin';
+  }
+
+  /** 切换身份。切到管理员会先校验白名单，失败返回 false。 */
+  function setIdentity(mode) {
+    if (mode !== 'admin') {
+      storeIdentity('user');
+      notify();
+      return Promise.resolve(true);
+    }
+    return isAdmin().then(function (ok) {
+      if (!ok) {
+        toast('这个账号没有管理员权限');
+        return false;
+      }
+      storeIdentity('admin');
+      notify();
+      return true;
+    });
+  }
+
+  /** 管理员页面守卫：未登录跳登录页；已登录但非管理员身份则跳首页。 */
+  function guardAdmin() {
+    if (!currentSession) {
+      location.href = ROOT + 'login.html?next=' + encodeURIComponent(location.pathname + location.search);
+      return false;
+    }
+    if (!isAdminMode()) {
+      toast('需要以管理员身份登录');
+      setTimeout(function () {
+        location.href = ROOT + 'index.html';
+      }, 900);
+      return false;
+    }
+    return true;
+  }
+
+  /* ---------------- 顶栏登录态 ---------------- */
+
+  function renderSlot() {
+    if (!booted) return;
+    var slots = document.querySelectorAll('[data-auth-slot]');
+    if (!slots.length) return;
+
+    /* 白名单被移除后，历史上残留的「管理员身份」要自动回退，避免进入守卫死循环 */
+    if (identity === 'admin' && adminFlag !== true) storeIdentity('user');
+
+    var user = currentUser();
+    var short = displayName();
+    var adminMode = isAdminMode();
+
+    for (var i = 0; i < slots.length; i++) {
+      var slot = slots[i];
+      if (!user) {
+        slot.innerHTML =
+          '<a class="auth-btn" href="' + ROOT + 'login.html">' +
+          '<span class="auth-btn__dot"></span>登录 / 注册</a>';
+        continue;
+      }
+      slot.innerHTML =
+        '<div class="auth-menu" data-auth-menu>' +
+        '<button class="auth-btn auth-btn--user" type="button" data-auth-toggle aria-haspopup="true" aria-expanded="false">' +
+        '<span class="auth-btn__avatar">' +
+        escapeHtml(short.slice(0, 1).toUpperCase()) +
+        '</span>' +
+        '<span class="auth-btn__name">' + escapeHtml(short) + '</span>' +
+        (adminMode
+          ? '<span class="auth-btn__role">管理员</span>'
+          : '<span class="auth-btn__role auth-btn__role--user">用户</span>') +
+        '</button>' +
+        '<div class="auth-dropdown">' +
+        '<div class="auth-dropdown__role">当前身份：' + (adminMode ? '管理员' : '普通用户') + '</div>' +
+        (adminMode
+          ? '<a href="' + ROOT + 'admin.html">管理后台</a>' +
+            '<a href="' + ROOT + 'account.html">个人中心</a>' +
+            '<button type="button" data-identity="user">切换为普通用户</button>'
+          : '<a href="' + ROOT + 'account.html">个人中心</a>' +
+            (adminFlag ? '<button type="button" data-identity="admin">切换到管理员身份</button>' : '')) +
+        '<button type="button" data-auth-signout>退出登录</button>' +
+        '</div></div>';
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-auth-toggle]'), function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var menu = btn.closest('[data-auth-menu]');
+        var open = menu.hasAttribute('data-open');
+        if (open) {
+          menu.removeAttribute('data-open');
+          btn.setAttribute('aria-expanded', 'false');
+        } else {
+          menu.setAttribute('data-open', '');
+          btn.setAttribute('aria-expanded', 'true');
+        }
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-identity]'), function (btn) {
+      btn.addEventListener('click', function () {
+        var target = btn.getAttribute('data-identity');
+        btn.disabled = true;
+        setIdentity(target).then(function (ok) {
+          btn.disabled = false;
+          if (!ok) return;
+          toast(target === 'admin' ? '已切换为管理员身份' : '已切换为普通用户身份');
+          if (target === 'admin') location.href = ROOT + 'admin.html';
+        });
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-auth-signout]'), function (btn) {
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        signOut().then(function () {
+          storeIdentity('user');
+          toast('已退出登录');
+          location.href = ROOT + 'index.html';
+        });
+      });
+    });
+  }
+
+  document.addEventListener('click', function () {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-auth-menu][data-open]'), function (menu) {
+      menu.removeAttribute('data-open');
+      var btn = menu.querySelector('[data-auth-toggle]');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    });
+  });
+
+  /* ---------------- 对外接口 ---------------- */
+
+  window.WSBlogCloud = {
+    root: ROOT,
+    config: cfg,
+    ready: waitForSdk,
+    cloud: cloud,
+    db: db,
+    escapeHtml: escapeHtml,
+    toast: toast,
+    formatDate: formatDate,
+    formatDateTime: formatDateTime,
+    getSession: getSession,
+    getUser: getUser,
+    isAdmin: isAdmin,
+    isAdminSync: function () {
+      return adminFlag === true;
+    },
+    isAdminMode: isAdminMode,
+    identity: function () {
+      return identity;
+    },
+    setIdentity: setIdentity,
+    guardAdmin: guardAdmin,
+    currentUser: currentUser,
+    currentUid: currentUid,
+    displayName: displayName,
+    refresh: refresh,
+    signInWithPassword: signInWithPassword,
+    sendOtp: sendOtp,
+    verifyOtp: verifyOtp,
+    signOut: signOut,
+    requireLogin: requireLogin,
+    onSessionChange: onSessionChange,
+    renderSlot: renderSlot,
+  };
+
+  onSessionChange(renderSlot);
+
+  /* 启动：SDK 就绪后恢复会话并渲染顶栏。
+     页面脚本可 await booted() 拿到确定后的登录态，再决定是否跳转。 */
+  var bootPromise = waitForSdk()
+    .then(function () {
+      return refresh();
+    })
+    .catch(function (err) {
+      console.warn('[WSBlogCloud] 初始化失败：' + (err && err.message));
+      currentSession = null;
+      adminFlag = false;
+      notify();
+      return null;
+    });
+
+  window.WSBlogCloud.booted = function () {
+    return bootPromise;
+  };
+})();

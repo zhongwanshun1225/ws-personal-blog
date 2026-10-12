@@ -34,12 +34,18 @@ for stream in (sys.stdout, sys.stderr):
         except (ValueError, OSError):
             pass
 
+from wsblog.cloudconf import build_cloud_config_js, cloud_enabled  # noqa: E402
 from wsblog.content import collect_tags, load_page, load_posts, load_projects  # noqa: E402
 from wsblog.server import serve  # noqa: E402
 from wsblog.templates.layout import layout  # noqa: E402
 from wsblog.templates.pages import (  # noqa: E402
     about_page,
+    account_page,
+    admin_page,
+    cloud_post_page,
+    cloud_posts_page,
     home_page,
+    login_page,
     not_found_page,
     post_page,
     project_detail_page,
@@ -54,6 +60,18 @@ SRC_DIR = os.path.join(ROOT_DIR, "src")
 CONTENT_DIR = os.path.join(ROOT_DIR, "content")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 CONFIG_FILE = os.path.join(ROOT_DIR, "site.config.json")
+
+# 需要拷贝到 dist/assets/ 的浏览器端脚本
+ASSET_SCRIPTS = (
+    "app.js",
+    "cloud.js",
+    "cloud-markdown.js",
+    "auth.js",
+    "interact.js",
+    "account.js",
+    "admin.js",
+    "cloud-posts.js",
+)
 
 _ANCHOR_RE = re.compile(r"<a\s|</a>")
 
@@ -125,6 +143,12 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     config = read_config()
     nested_anchor_issues.clear()
 
+    cloud = cloud_enabled()
+    site_origin = str(config.get("siteOrigin") or "").rstrip("/")
+    if cloud and not site_origin:
+        # 云服务按 Origin 校验请求，这里兜底用站点 url，正式部署时应显式配置
+        site_origin = str(config.get("url") or "").rstrip("/")
+
     if clean and os.path.isdir(DIST_DIR):
         shutil.rmtree(DIST_DIR)
         print("· 已清空 dist/")
@@ -148,6 +172,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             root="",
             current="index.html",
             canonical="/",
+            cloud=cloud,
             content=home_page(config=config, posts=posts, projects=projects, tags=tags, root=""),
         ),
     )
@@ -162,6 +187,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             root="",
             current="projects.html",
             canonical="/projects.html",
+            cloud=cloud,
             content=projects_page(config=config, projects=projects, root=""),
         ),
     )
@@ -179,6 +205,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 root=root_prefix(1),
                 current="projects.html",
                 canonical=f"/{project['url']}",
+                cloud=cloud,
                 content=project_detail_page(config=config, project=project, root=root_prefix(1)),
             ),
         )
@@ -193,6 +220,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             root="",
             current="about.html",
             canonical="/about.html",
+            cloud=cloud,
             content=about_page(config=config, page=about_data, root=""),
         ),
     )
@@ -207,6 +235,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             root="",
             current="tags.html",
             canonical="/tags.html",
+            cloud=cloud,
             content=tags_page(config=config, tags=tags, posts=posts, root=""),
         ),
     )
@@ -225,6 +254,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 root=root_prefix(2),
                 current="tags.html",
                 canonical=f"/tags/{tag['slug']}.html",
+                cloud=cloud,
                 content=tag_page(config=config, tag=tag, posts=tag_posts, root=root_prefix(2)),
             ),
         )
@@ -257,9 +287,82 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 canonical=f"/{post['url']}",
                 show_progress=True,
                 extra_head=extra_head,
+                cloud=cloud,
+                scripts=["interact.js"],
                 content=post_page(
                     config=config, post=post, prev_post=prev_post, next_post=next_post, root=root_prefix(1)
                 ),
+            ),
+        )
+
+    # --- 账号与后台（仅接入云能力时才有意义）---
+    if cloud:
+        write(
+            "login.html",
+            layout(
+                config=config,
+                title="登录 / 注册",
+                description="登录后可以评论、点赞、收藏文章；管理员可进入后台发布内容。",
+                root="",
+                current="",
+                cloud=True,
+                scripts=["auth.js"],
+                content=login_page(config=config, root=""),
+            ),
+        )
+        write(
+            "account.html",
+            layout(
+                config=config,
+                title="个人中心",
+                description="维护个人资料，查看我的评论与收藏。",
+                root="",
+                current="",
+                cloud=True,
+                scripts=["account.js"],
+                content=account_page(config=config, root=""),
+            ),
+        )
+        write(
+            "admin.html",
+            layout(
+                config=config,
+                title="管理后台",
+                description="在线撰写与发布文章、管理评论与用户。",
+                root="",
+                current="",
+                cloud=True,
+                vendor=["marked", "highlight"],
+                scripts=["cloud-markdown.js", "admin.js"],
+                content=admin_page(config=config, root=""),
+            ),
+        )
+        write(
+            "posts.html",
+            layout(
+                config=config,
+                title="在线文章",
+                description="管理员在线发布的文章，支持点赞、收藏与评论。",
+                root="",
+                current="posts.html",
+                canonical="/posts.html",
+                cloud=True,
+                scripts=["cloud-posts.js"],
+                content=cloud_posts_page(config=config, root=""),
+            ),
+        )
+        write(
+            "post.html",
+            layout(
+                config=config,
+                title="在线文章",
+                description="在线阅读管理员发布的文章。",
+                root="",
+                current="posts.html",
+                cloud=True,
+                vendor=["marked", "highlight"],
+                scripts=["cloud-markdown.js", "cloud-posts.js"],
+                content=cloud_post_page(config=config, root=""),
             ),
         )
 
@@ -271,13 +374,21 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             title="页面不存在",
             root="",
             current="",
+            cloud=cloud,
             content=not_found_page(root=""),
         ),
     )
 
     # --- 静态资源 ---
     copy_file(os.path.join(SRC_DIR, "styles", "main.css"), os.path.join("assets", "main.css"))
-    copy_file(os.path.join(SRC_DIR, "scripts", "app.js"), os.path.join("assets", "app.js"))
+    for name in ASSET_SCRIPTS:
+        source = os.path.join(SRC_DIR, "scripts", name)
+        if os.path.isfile(source):
+            copy_file(source, os.path.join("assets", name))
+
+    # --- 云端配置（前端读 window.__CLOUD__）---
+    if cloud:
+        write("assets/cloud-config.js", build_cloud_config_js(config, site_origin=site_origin))
 
     # --- 搜索索引 ---
     search_items = [
@@ -341,13 +452,14 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     write(".nojekyll", "")
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    page_count = 5 + len(posts) + len(projects) + len(tags)
+    page_count = 5 + len(posts) + len(projects) + len(tags) + (5 if cloud else 0)
     drafts_note = "已包含" if any(post["draft"] for post in posts) else "未包含"
 
     print(f"· 文章 {len(posts)} 篇（含草稿 {drafts_note}）")
     print(f"· 项目 {len(projects)} 个")
     print(f"· 标签 {len(tags)} 个")
     print(f"· 页面 {page_count} 个")
+    print(f"· 云能力 {'已接入（登录 / 评论 / 后台）' if cloud else '未接入（纯静态）'}")
     print(f"✓ 构建完成，用时 {elapsed_ms}ms → {os.path.relpath(DIST_DIR, os.getcwd())}")
 
     return {
@@ -355,6 +467,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         "projects": len(projects),
         "tags": len(tags),
         "pages": page_count,
+        "cloud": cloud,
         "elapsed_ms": elapsed_ms,
         "nested_anchors": list(nested_anchor_issues),
     }
@@ -535,6 +648,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--new", nargs="*", metavar=("TYPE", "TITLE"),
                         help='新建内容：--new post "标题" / --new project "名称"')
     parser.add_argument("--serve", action="store_true", help="启动本地预览服务器（含自动重建）")
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"),
+                        help="预览服务器绑定地址（默认 127.0.0.1，云端部署用 0.0.0.0）")
     parser.add_argument("--drafts", action="store_true", help="连草稿一起生成")
     parser.add_argument("--clean", action="store_true", help="先清空 dist/ 再生成")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 4173)), help="预览端口（默认 4173）")
@@ -565,6 +680,7 @@ def main(argv=None) -> int:
         serve(
             DIST_DIR,
             port=args.port,
+            host=args.host,
             rebuild=lambda: build(include_drafts=True, clean=False),
             watch_dirs=[CONTENT_DIR, SRC_DIR],
         )

@@ -15,3 +15,6 @@ dist/
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db
+
+# 部署描述文件
+*.genie

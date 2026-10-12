@@ -30,6 +30,8 @@
       toastEl.removeAttribute('data-show');
     }, 1900);
   }
+  /* 云端脚本复用同一个提示条，避免两套实现互相打断 */
+  window.__wsToast = toast;
 
   /* ================= 移动端菜单 ================= */
   (function () {

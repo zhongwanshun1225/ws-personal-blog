@@ -5,17 +5,25 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from ..util import escape_html as esc, parse_date, slugify
 from .layout import icons
 
 __all__ = [
     "home_page",
     "post_page",
+    "post_interact_block",
     "projects_page",
     "project_detail_page",
     "about_page",
     "tags_page",
     "tag_page",
+    "login_page",
+    "account_page",
+    "admin_page",
+    "cloud_posts_page",
+    "cloud_post_page",
     "not_found_page",
 ]
 
@@ -289,6 +297,7 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, root: str = "..
     <div class="chip-row">{_tag_chips(post["tags"], root)}</div>
     {nav_html}
   </footer>
+  {post_interact_block(post_slug=post["slug"], post_title=post["title"], root=root, login_next=post["url"])}
 </div>"""
 
 
@@ -488,4 +497,480 @@ def not_found_page(*, root: str = "") -> str:
   <h1 style="font-size:1.3rem;margin:20px 0 10px">这个页面不存在</h1>
   <p style="color:var(--text-dim);font-size:.92rem;margin:0 0 30px">链接可能已经失效，或者内容被移动了。</p>
   <a class="btn btn--primary" href="{root}index.html">返回首页</a>
+</div>"""
+
+
+# ---------- 登录 / 注册 ----------
+
+_LOGIN_ICONS = {
+    "heart": (
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M12 20s-7-4.6-7-9.3A4.2 4.2 0 0 1 12 8a4.2 4.2 0 0 1 7 2.7C19 15.4 12 20 12 20Z"/></svg>'
+    ),
+    "bookmark": (
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M6 4.5h12v15l-6-4-6 4z"/></svg>'
+    ),
+    "comment": (
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M20 12a7.5 7.5 0 0 1-11 6.5L5 20l1.5-4A7.5 7.5 0 1 1 20 12Z"/></svg>'
+    ),
+    "shield": (
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M12 3l7 3v6c0 4.2-3 7.5-7 9-4-1.5-7-4.8-7-9V6z"/><path d="m9.5 12 1.8 1.8 3.7-3.8"/></svg>'
+    ),
+    "user": (
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c1-3.5 3.7-5.2 7-5.2s6 1.7 7 5.2"/></svg>'
+    ),
+}
+
+
+def post_interact_block(*, post_slug: str, post_title: str, root: str = "../", login_next: str = "") -> str:
+    """文章页的点赞 / 收藏 / 评论区。
+
+    ``data-post-slug`` 写在容器上，interact.js 启动时直接读取并初始化。
+    """
+    target = login_next or post_slug
+    login_href = f'{root}login.html?next={quote("/" + target, safe="/")}'
+
+    return f"""<section class="interact" data-interact data-post-slug="{esc(post_slug)}" data-post-title="{esc(post_title)}">
+  <div class="interact__bar">
+    <button class="interact__btn" type="button" data-like aria-pressed="false">
+      {_LOGIN_ICONS["heart"]}<span>点赞</span><span class="interact__count" data-like-count>0</span>
+    </button>
+    <button class="interact__btn" type="button" data-bookmark aria-pressed="false">
+      {_LOGIN_ICONS["bookmark"]}<span data-bookmark-label>收藏</span>
+    </button>
+  </div>
+  <div class="comments">
+    <div class="comments__head">
+      <h2 class="comments__title">{_LOGIN_ICONS["comment"]}<span>评论</span></h2>
+      <span class="comments__count"><span data-comment-count>0</span> 条</span>
+    </div>
+    <div class="comment-gate" data-comment-gate>
+      <p>登录后可以参与讨论。</p>
+      <a class="btn btn--primary btn--sm" href="{login_href}">登录 / 注册</a>
+    </div>
+    <form class="comment-form" data-comment-form hidden>
+      <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
+      <div class="comment-form__foot">
+        <span class="comment-form__hint">最多 1000 字</span>
+        <button class="btn btn--primary btn--sm" type="submit" data-comment-submit>发表评论</button>
+      </div>
+    </form>
+    <ul class="comment-list" data-comment-list></ul>
+  </div>
+</section>"""
+
+
+def login_page(*, config: dict, root: str = "") -> str:
+    """登录 / 注册页。双身份选择 + 密码 / 邮箱验证码两种方式。
+
+    DOM 上的 data-* 契约由 ``src/scripts/auth.js`` 使用，改动需同步。
+    """
+    site_title = esc(config.get("title") or "Blog")
+    return f"""<div class="wrap auth-page">
+  <div class="auth-card">
+    <aside class="auth-card__aside">
+      <span class="eyebrow">Account</span>
+      <h2 class="auth-aside__title">一个账号，<br>两种身份</h2>
+      <p class="auth-aside__text">
+        普通用户可以评论、点赞、收藏文章；管理员在同一个账号里多一层权限，可以进入后台在线发文、
+        管理评论与用户。
+      </p>
+      <ul class="auth-aside__list">
+        <li>{_LOGIN_ICONS["user"]}<div><strong>普通用户</strong><span>评论 · 点赞 · 收藏 · 个人资料</span></div></li>
+        <li>{_LOGIN_ICONS["shield"]}<div><strong>管理员</strong><span>在线发文 · 评论审核 · 用户管理</span></div></li>
+      </ul>
+      <p class="auth-aside__foot">管理员身份由邮箱白名单认定，普通账号选择管理员身份会被拒绝。</p>
+    </aside>
+
+    <div class="auth-card__main">
+      <div data-auth-form-wrap>
+        <h1 class="auth-card__title" data-auth-title>登录 / 注册</h1>
+        <p class="auth-card__lead" data-auth-lead>邮箱 + 密码登录；没有账号的话，首次登录会自动创建。</p>
+
+        <div class="role-switch" role="radiogroup" aria-label="登录身份">
+          <button class="role-btn is-active" type="button" role="radio" aria-checked="true" data-role="user">
+            <span class="role-btn__icon">{_LOGIN_ICONS["user"]}</span>
+            <span class="role-btn__label">普通用户</span>
+            <span class="role-btn__desc">参与互动</span>
+          </button>
+          <button class="role-btn" type="button" role="radio" aria-checked="false" data-role="admin">
+            <span class="role-btn__icon">{_LOGIN_ICONS["shield"]}</span>
+            <span class="role-btn__label">管理员</span>
+            <span class="role-btn__desc">进入后台</span>
+          </button>
+        </div>
+
+        <form class="auth-form" data-auth-form novalidate>
+          <label class="field">
+            <span class="field__label">邮箱</span>
+            <input class="field__input" type="email" name="email" placeholder="you@example.com"
+                   autocomplete="email" spellcheck="false" required>
+          </label>
+
+          <div class="auth-tabs" role="tablist" aria-label="登录方式">
+            <button class="auth-tab is-active" type="button" role="tab" aria-selected="true" data-tab="password">密码登录</button>
+            <button class="auth-tab" type="button" role="tab" aria-selected="false" data-tab="otp">邮箱验证码</button>
+          </div>
+
+          <div class="auth-panel" data-panel="password">
+            <label class="field">
+              <span class="field__label">密码</span>
+              <input class="field__input" type="password" name="password" placeholder="输入密码"
+                     autocomplete="current-password">
+            </label>
+          </div>
+
+          <div class="auth-panel" data-panel="otp" hidden>
+            <label class="field">
+              <span class="field__label">验证码</span>
+              <div class="field__row">
+                <input class="field__input" type="text" name="code" inputmode="numeric" placeholder="6 位验证码"
+                       autocomplete="one-time-code">
+                <button class="btn btn--ghost btn--sm" type="button" data-send-code>获取验证码</button>
+              </div>
+            </label>
+            <label class="field">
+              <span class="field__label">设置密码（仅新用户需要）</span>
+              <input class="field__input" type="password" name="signupPassword" placeholder="新账号首次登录请设置密码"
+                     autocomplete="new-password">
+            </label>
+          </div>
+
+          <div class="auth-error" data-auth-error hidden></div>
+          <div class="auth-notice" data-auth-notice hidden></div>
+
+          <button class="btn btn--primary btn--block" type="submit" data-auth-submit>登录</button>
+        </form>
+
+        <p class="auth-foot">
+          登录即表示你同意本站以最小必要范围保存账号信息。忘记密码可改用「邮箱验证码」登录。
+        </p>
+      </div>
+
+      <div data-signed-in hidden>
+        <h1 class="auth-card__title">你已经登录了</h1>
+        <p class="auth-card__lead">可以直接进入个人中心，或者在下方切换身份。</p>
+        <div class="signed-card">
+          <div class="signed-card__row"><span>账号</span><strong data-signed-in-mail>—</strong></div>
+          <div class="signed-card__row"><span>昵称</span><strong data-signed-in-name>—</strong></div>
+          <div class="signed-card__row"><span>当前身份</span><strong data-signed-in-role>—</strong></div>
+        </div>
+        <div class="auth-actions">
+          <a class="btn btn--primary" href="{root}account.html">进入个人中心</a>
+          <a class="btn btn--ghost" href="{root}admin.html" data-signed-in-admin hidden>管理后台</a>
+          <button class="btn btn--ghost" type="button" data-signed-in-switch hidden>切换身份</button>
+          <button class="btn btn--danger" type="button" data-signed-in-signout>退出登录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>"""
+
+
+# ---------- 个人中心 ----------
+
+def account_page(*, config: dict, root: str = "") -> str:
+    return f"""<div class="wrap" data-account>
+  <div class="page-head">
+    <span class="eyebrow">Account</span>
+    <h1 class="article-head__title" style="margin-top:14px">个人中心</h1>
+    <p class="article-head__summary" style="margin-top:18px">维护你的资料，查看发表过的评论与收藏的文章。</p>
+  </div>
+
+  <div class="account-grid">
+    <aside class="account-side">
+      <div class="account-card">
+        <div class="account-avatar" data-profile-avatar-preview>?</div>
+        <div class="account-card__name" data-account-name>加载中…</div>
+        <p class="account-card__bio" data-account-bio>—</p>
+        <dl class="account-meta">
+          <div><dt>邮箱</dt><dd data-account-email>—</dd></div>
+          <div><dt>身份</dt><dd data-account-role>—</dd></div>
+          <div><dt>注册时间</dt><dd data-account-joined>—</dd></div>
+        </dl>
+        <div class="account-card__actions">
+          <button class="btn btn--ghost btn--sm" type="button" data-account-identity hidden>切换身份</button>
+          <button class="btn btn--danger btn--sm" type="button" data-account-signout>退出登录</button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="account-main">
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">资料设置</h2>
+          <span class="panel__hint">昵称会显示在你的评论上</span>
+        </div>
+        <form class="form-grid" onsubmit="return false">
+          <label class="field">
+            <span class="field__label">昵称</span>
+            <input class="field__input" type="text" maxlength="40" placeholder="怎么称呼你" data-profile-nickname>
+          </label>
+          <label class="field">
+            <span class="field__label">头像地址</span>
+            <input class="field__input" type="url" maxlength="500" placeholder="https://… 留空则用昵称首字母"
+                   data-profile-avatar>
+          </label>
+          <label class="field field--full">
+            <span class="field__label">个人简介</span>
+            <textarea class="field__input" rows="3" maxlength="300" placeholder="一两句话介绍自己" data-profile-bio></textarea>
+          </label>
+          <div class="form-grid__foot">
+            <button class="btn btn--primary btn--sm" type="button" data-profile-save>保存资料</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">我的评论</h2>
+        </div>
+        <ul class="stack" data-my-comments>
+          <li class="stack-empty">加载中…</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">我的收藏</h2>
+        </div>
+        <ul class="stack" data-my-bookmarks>
+          <li class="stack-empty">加载中…</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+</div>"""
+
+
+# ---------- 管理员后台 ----------
+
+def admin_page(*, config: dict, root: str = "") -> str:
+    return f"""<div class="wrap" data-admin>
+  <div class="page-head">
+    <span class="eyebrow">Admin</span>
+    <h1 class="article-head__title" style="margin-top:14px">管理后台</h1>
+    <p class="article-head__summary" style="margin-top:18px">
+      在线撰写与发布文章、管理评论与用户。这里的每一项操作都会经过服务端权限校验，非管理员无法调用。
+    </p>
+    <div class="hero__actions" style="margin-top:24px">
+      <button class="btn btn--ghost btn--sm" type="button" data-admin-refresh>刷新数据</button>
+      <a class="btn btn--ghost btn--sm" href="{root}index.html">返回站点</a>
+    </div>
+  </div>
+
+  <div class="admin-stats">
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-users>0</div><div class="admin-stat__label">注册用户</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-comments>0</div><div class="admin-stat__label">评论总数</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-hidden>0</div><div class="admin-stat__label">已隐藏评论</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-likes>0</div><div class="admin-stat__label">点赞总数</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-posts>0</div><div class="admin-stat__label">在线文章</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-drafts>0</div><div class="admin-stat__label">草稿</div></div>
+  </div>
+
+  <div class="admin-tabs" role="tablist" aria-label="后台分区">
+    <button class="admin-tab is-active" type="button" role="tab" aria-selected="true" data-admin-tab="posts">文章管理</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="comments">评论管理</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="users">用户</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="admins">管理员</button>
+  </div>
+
+  <section class="admin-panel" data-admin-panel="posts">
+    <div class="admin-split">
+      <div class="panel panel--editor">
+        <div class="panel__head">
+          <h2 class="panel__title" data-editor-title>写一篇新文章</h2>
+          <span class="panel__hint">Markdown 语法，支持代码块与提示块</span>
+        </div>
+        <form class="form-grid" data-post-form onsubmit="return false">
+          <label class="field field--full">
+            <span class="field__label">标题</span>
+            <input class="field__input" type="text" name="title" placeholder="文章标题" maxlength="120">
+          </label>
+          <label class="field">
+            <span class="field__label">Slug（留空自动生成）</span>
+            <input class="field__input mono" type="text" name="slug" placeholder="my-first-post">
+          </label>
+          <label class="field">
+            <span class="field__label">标签（逗号分隔）</span>
+            <input class="field__input" type="text" name="tags" placeholder="Python, 性能优化">
+          </label>
+          <label class="field field--full">
+            <span class="field__label">摘要</span>
+            <input class="field__input" type="text" name="summary" placeholder="一句话说明这篇文章讲了什么" maxlength="200">
+          </label>
+          <label class="field field--full">
+            <span class="field__label">正文（Markdown）</span>
+            <textarea class="field__input field__textarea mono" rows="16" name="content_md"
+                      placeholder="## 标题&#10;&#10;正文…"></textarea>
+          </label>
+          <label class="field">
+            <span class="field__label">状态</span>
+            <select class="field__input" name="status">
+              <option value="draft">草稿（不公开）</option>
+              <option value="published">已发布</option>
+            </select>
+          </label>
+          <div class="form-grid__foot form-grid__foot--wide">
+            <button class="btn btn--primary btn--sm" type="button" data-post-save>保存草稿</button>
+            <button class="btn btn--ghost btn--sm" type="button" data-post-publish>保存并发布</button>
+            <button class="btn btn--ghost btn--sm" type="button" data-post-preview>预览渲染</button>
+            <button class="btn btn--ghost btn--sm" type="button" data-post-reset>清空表单</button>
+          </div>
+        </form>
+        <div class="editor-preview" data-post-preview-box hidden></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">已发布的在线文章</h2>
+          <span class="panel__hint">共 <span data-post-count>0</span> 篇</span>
+        </div>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
+            <tbody data-admin-posts>
+              <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="admin-panel" data-admin-panel="comments" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">全部评论</h2>
+        <div class="chip-row">
+          <button class="chip is-active" type="button" data-comment-filter="all">全部</button>
+          <button class="chip" type="button" data-comment-filter="visible">显示中</button>
+          <button class="chip" type="button" data-comment-filter="hidden">已隐藏</button>
+          <span class="panel__hint">共 <span data-comment-total>0</span> 条</span>
+        </div>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>作者 / 文章</th><th>内容</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody data-admin-comments>
+            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="admin-panel" data-admin-panel="users" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">注册用户</h2>
+        <span class="panel__hint">只展示已填写资料的账号</span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>昵称 / ID</th><th>简介</th><th>互动</th><th>注册时间</th></tr></thead>
+          <tbody data-admin-users>
+            <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="admin-panel" data-admin-panel="admins" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">管理员白名单</h2>
+        <span class="panel__hint">只有名单里的邮箱登录后才能选择管理员身份</span>
+      </div>
+      <div class="inline-form">
+        <input class="field__input" type="email" placeholder="new-admin@example.com" data-admin-email-input>
+        <input class="field__input" type="text" placeholder="备注（可选）" data-admin-email-note>
+        <button class="btn btn--primary btn--sm" type="button" data-admin-email-add>加入白名单</button>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>邮箱</th><th>备注</th><th>加入时间</th><th>操作</th></tr></thead>
+          <tbody data-admin-emails>
+            <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>"""
+
+
+# ---------- 在线文章（云端）----------
+
+def cloud_posts_page(*, config: dict, root: str = "") -> str:
+    return f"""<div class="wrap" data-cloud-posts>
+  <div class="page-head">
+    <span class="eyebrow">Online</span>
+    <h1 class="article-head__title" style="margin-top:14px">在线文章</h1>
+    <p class="article-head__summary" style="margin-top:18px">
+      由管理员在后台直接发布的内容，共 <span data-cloud-count>0</span> 篇。它们与静态文章一样支持点赞、收藏与评论。
+    </p>
+  </div>
+  <section class="section" style="margin-top:44px">
+    <div class="loading-state" data-cloud-status>正在加载文章…</div>
+    <ul class="post-list" data-cloud-post-list></ul>
+    <div class="empty-state" data-cloud-empty hidden>还没有在线发布的文章。</div>
+  </section>
+</div>"""
+
+
+def cloud_post_page(*, config: dict, root: str = "") -> str:
+    return f"""<div class="wrap" data-cloud-post>
+  <div class="page-head">
+    <nav class="breadcrumb" aria-label="面包屑">
+      <a href="{root}index.html">首页</a>
+      <span class="breadcrumb__sep">/</span>
+      <a href="{root}posts.html">在线文章</a>
+    </nav>
+    <header class="article-head" data-cloud-head>
+      <span class="eyebrow">Online</span>
+      <h1 class="article-head__title">加载中…</h1>
+    </header>
+  </div>
+  <article class="prose" data-cloud-body>
+    <p>正在读取文章内容…</p>
+  </article>
+  <section class="interact" data-interact data-post-title="">
+    <div class="interact__bar">
+      <button class="interact__btn" type="button" data-like aria-pressed="false">
+        {_LOGIN_ICONS["heart"]}<span>点赞</span><span class="interact__count" data-like-count>0</span>
+      </button>
+      <button class="interact__btn" type="button" data-bookmark aria-pressed="false">
+        {_LOGIN_ICONS["bookmark"]}<span data-bookmark-label>收藏</span>
+      </button>
+    </div>
+    <div class="comments">
+      <div class="comments__head">
+        <h2 class="comments__title">{_LOGIN_ICONS["comment"]}<span>评论</span></h2>
+        <span class="comments__count"><span data-comment-count>0</span> 条</span>
+      </div>
+      <div class="comment-gate" data-comment-gate>
+        <p>登录后可以参与讨论。</p>
+        <a class="btn btn--primary btn--sm" href="{root}login.html?next=/posts.html">登录 / 注册</a>
+      </div>
+      <form class="comment-form" data-comment-form hidden>
+        <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
+        <div class="comment-form__foot">
+          <span class="comment-form__hint">最多 1000 字</span>
+          <button class="btn btn--primary btn--sm" type="submit" data-comment-submit>发表评论</button>
+        </div>
+      </form>
+      <ul class="comment-list" data-comment-list></ul>
+    </div>
+  </section>
 </div>"""

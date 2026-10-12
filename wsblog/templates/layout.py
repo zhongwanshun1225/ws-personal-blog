@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 from urllib.parse import quote
 
+from ..cloudconf import vendor_url
 from ..util import escape_html as esc
 
 __all__ = ["layout", "render_social", "icons"]
@@ -124,8 +125,16 @@ def layout(
     body_class: str = "",
     extra_head: str = "",
     show_progress: bool = False,
+    cloud: bool = False,
+    vendor: list | None = None,
+    scripts: list | None = None,
 ) -> str:
-    """渲染完整页面。"""
+    """渲染完整页面。
+
+    cloud    —— 是否接入云端（注入 cloud-config.js / SDK / cloud.js，并在顶栏放登录态插槽）
+    vendor   —— 需要额外加载的 CDN 库，取值 "marked" / "highlight"
+    scripts  —— 该页专属的本地脚本文件名（assets/ 下的相对名，按顺序注入）
+    """
     site_title = config.get("title") or "Blog"
     page_title = f"{title} · {site_title}" if title and title != site_title else site_title
     desc = description or config.get("description") or ""
@@ -166,6 +175,37 @@ def layout(
     body_attr = f' class="{esc(body_class)}"' if body_class else ""
     progress_html = '<div class="read-progress" id="readProgress"></div>' if show_progress else ""
     brand_initial = esc(str(site_title).strip()[:1].upper())
+
+    # ---------- 顶栏登录态 ----------
+    # 先渲染一个静态兜底链接：即使云端 SDK 拉取失败，访客也总能找到登录入口。
+    # cloud.js 就绪后会整体替换这个插槽的内容。
+    if cloud:
+        auth_slot = (
+            '<div class="auth-slot" data-auth-slot>'
+            f'<a class="auth-btn" href="{root}login.html">'
+            '<span class="auth-btn__dot"></span>登录 / 注册</a>'
+            "</div>"
+        )
+    else:
+        auth_slot = ""
+
+    # ---------- 脚本 ----------
+    # 全部用 defer：执行顺序 = 文档顺序，所以 cloud-config → CDN → cloud.js 是可靠的。
+    script_tags = []
+    if cloud:
+        script_tags.append(f'<script src="{root}assets/cloud-config.js" defer></script>')
+        for name in vendor or []:
+            url = vendor_url(name)
+            if url:
+                script_tags.append(f'<script src="{esc(url)}" defer></script>')
+        sdk = vendor_url("sdk")
+        if sdk:
+            script_tags.append(f'<script src="{esc(sdk)}" defer></script>')
+        script_tags.append(f'<script src="{root}assets/cloud.js" defer></script>')
+    script_tags.append(f'<script src="{root}assets/app.js" defer></script>')
+    for name in scripts or []:
+        script_tags.append(f'<script src="{root}assets/{esc(name)}" defer></script>')
+    scripts_html = "\n".join(script_tags)
 
     return f"""<!DOCTYPE html>
 <html lang="{esc(config.get("lang") or "zh-CN")}" data-root="{root}">
@@ -213,6 +253,7 @@ def layout(
       <button class="search-trigger" type="button" data-search-open aria-label="搜索站内内容">
         {icons["search"]}<span>搜索</span><kbd>Ctrl K</kbd>
       </button>
+      {auth_slot}
       {social_html}
       <button class="nav-toggle" type="button" data-nav-toggle aria-label="展开菜单" aria-expanded="false">{icons["menu"]}</button>
     </div>
@@ -249,6 +290,6 @@ def layout(
 </div>
 
 <div class="toast" data-toast role="status" aria-live="polite"></div>
-<script src="{root}assets/app.js" defer></script>
+{scripts_html}
 </body>
 </html>"""

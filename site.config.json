@@ -8,6 +8,7 @@
   "keywords": ["技术博客", "前端", "全栈", "开源项目"],
   "lang": "zh-CN",
   "url": "https://wanshunzhong-ai.github.io/ws-personal-blog",
+  "siteOrigin": "https://ws-blog.app.workbuddy.host",
   "since": 2026,
 
   "hero": {
@@ -28,6 +29,7 @@
     { "label": "首页", "url": "index.html" },
     { "label": "项目", "url": "projects.html" },
     { "label": "标签", "url": "tags.html" },
+    { "label": "在线文章", "url": "posts.html" },
     { "label": "关于", "url": "about.html" }
   ],
 

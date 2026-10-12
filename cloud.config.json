@@ -1,0 +1,14 @@
+{
+  "_readme": "云服务公开配置。publicConfig 里的值都是前端可见的公开信息（publishableKey 只标识应用、不含权限，服务端按 Origin 校验），可以随站点一起发布。改应用后请同步更新 endpoint / publishableKey。",
+
+  "applicationId": "wbapp_4Kq5LMrPlZrJl7t1FUig3H",
+  "endpoint": "https://ws-blog.app.workbuddy.host",
+  "oauthRelayBaseUrl": "https://www.workbuddy.cn/v2/as/genie-baas/oauth",
+  "publishableKey": "wbpk_4Kq5LMrPlZrJl7t1FUig3H_TJ4HAxiCt7P2ofyFqLaY5c2NYG2sCf3v",
+
+  "vendor": {
+    "sdk": "https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js",
+    "marked": "https://cdn.jsdelivr.net/npm/marked@15/marked.min.js",
+    "highlight": "https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"
+  }
+}
