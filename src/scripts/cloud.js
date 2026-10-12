@@ -293,14 +293,20 @@
     });
   }
 
-  /** 管理员页面守卫：未登录跳登录页；已登录但非管理员身份则跳首页。 */
+  /** 管理员页面守卫：未登录跳登录页；白名单账号自动切到管理员身份；其余跳首页。 */
   function guardAdmin() {
     if (!currentSession) {
       location.href = ROOT + 'login.html?next=' + encodeURIComponent(location.pathname + location.search);
       return false;
     }
     if (!isAdminMode()) {
-      toast('需要以管理员身份登录');
+      if (adminFlag === true) {
+        /* 打开后台本身就是明确意图，没必要再让白名单账号点一次「切换身份」 */
+        storeIdentity('admin');
+        notify();
+        return true;
+      }
+      toast('这个账号没有管理员权限');
       setTimeout(function () {
         location.href = ROOT + 'index.html';
       }, 900);

@@ -302,7 +302,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             layout(
                 config=config,
                 title="登录 / 注册",
-                description="登录后可以评论、点赞、收藏文章；管理员可进入后台发布内容。",
+                description="一个入口登录：普通账号注册即可评论、点赞、收藏；管理员账号登录后可自选进入后台。",
                 root="",
                 current="",
                 cloud=True,

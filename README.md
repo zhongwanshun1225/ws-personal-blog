@@ -121,19 +121,26 @@ docs: ""                       # 文档链接（可选）
 
 ## 账号与在线文章（可选的云能力）
 
-站点内置了一套可选的账号体系，托管在 [WorkBuddy 云服务](https://www.workbuddy.cn)（CloudBase）上：
+站点内置了一套可选的账号体系，托管在 [WorkBuddy 云服务](https://www.workbuddy.cn)（CloudBase）上。
 
-- **普通用户**：邮箱注册 / 登录，可以评论、点赞、收藏文章，查看个人中心
-- **管理员**：同一账号可在登录页切换为管理员身份，进入 `/admin.html` 后台，在线发文、审核评论、管理用户与邮箱白名单
+**只有一个登录入口**，不区分「用户入口」和「管理员入口」——能做什么完全由账号本身决定：
+
+| 登录的账号 | 登录后的走向 |
+| --- | --- |
+| 普通账号 | 直接以普通用户身份进入（评论、点赞、收藏、个人中心） |
+| 管理员账号（邮箱白名单内） | 多一步「选择进入身份」：可以选「以普通用户身份进入」，也可以选「进入后台管理」 |
+
+管理员账号即使这次选了普通用户身份，之后也能随时从右上角账号菜单切回后台（直接打开 `/admin.html` 也会自动切过去）。
 
 相关文件：
 
 | 文件 | 作用 |
 | --- | --- |
-| `cloud.config.json` | 云应用公开配置（applicationId / endpoint / publishableKey） |
+| `cloud.config.json` | 云应用公开配置（applicationId / endpoint / publishableKey / 前端依赖来源） |
 | `wsblog/cloudconf.py` | 构建期把它生成到 `dist/assets/cloud-config.js` |
-| `src/scripts/cloud.js` | SDK 初始化、会话、双身份切换 |
-| `src/scripts/auth.js` | 登录 / 注册 / 身份选择 |
+| `src/vendor/` | 随站点打包的第三方库（Cloud SDK / marked / highlight.js），不依赖外部 CDN |
+| `src/scripts/cloud.js` | SDK 初始化、会话、管理员判定、身份切换 |
+| `src/scripts/auth.js` | 登录 / 注册 + 登录后的身份选择 |
 | `src/scripts/interact.js` | 评论、点赞、收藏 |
 | `src/scripts/account.js` / `admin.js` | 个人中心 / 后台 |
 | `src/scripts/cloud-posts.js` / `cloud-markdown.js` | 云端文章列表与客户端 Markdown 渲染 |
@@ -141,7 +148,7 @@ docs: ""                       # 文档链接（可选）
 ⚠️ 注意两点：
 
 1. **登录只在绑定的云域名下可用**。云服务按 Origin 校验，本地 `localhost` 与未登记的域名会被拒绝（页面会显示提示条）。此时站点仍作为纯静态博客正常工作，只是隐藏账号入口。
-2. **管理员由邮箱白名单决定**（数据库表 `admin_emails`）。白名单里的邮箱在登录页选择「管理员」即可进入后台；后台里也能继续添加 / 移除白名单。白名单为空时没有任何人能进后台，首个管理员邮箱需要直接写入该表。
+2. **管理员由邮箱白名单决定**（数据库表 `admin_emails`）。白名单里的邮箱登录后才会看到身份选择；后台里也能继续添加 / 移除白名单。白名单为空时没有任何人能进后台，首个管理员邮箱需要直接写入该表。
 
 不想要云能力时，删掉 `cloud.config.json` 并把 `build.py` 里的 `cloud=True` 改为 `False` 即可，站点退化为纯静态博客。
 
@@ -168,6 +175,7 @@ docs: ""                       # 文档链接（可选）
 │   └── server.py          #   本地预览服务器（自动重建）
 ├── src/
 │   ├── styles/main.css    # 全部样式
+│   ├── vendor/            # 随站点打包的第三方库（不依赖外部 CDN）
 │   └── scripts/           # 浏览器端脚本（app.js 交互 + cloud*.js 账号体系）
 └── dist/                  # 构建产物（直接部署这个目录）
 ```

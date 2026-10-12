@@ -570,8 +570,9 @@ def post_interact_block(*, post_slug: str, post_title: str, root: str = "../", l
 
 
 def login_page(*, config: dict, root: str = "") -> str:
-    """登录 / 注册页。双身份选择 + 密码 / 邮箱验证码两种方式。
+    """登录 / 注册页。单一入口（不预选身份）+ 密码 / 邮箱验证码两种方式。
 
+    管理员账号登录成功后，会多出一步「选择进入身份」（普通用户 / 管理后台）。
     DOM 上的 data-* 契约由 ``src/scripts/auth.js`` 使用，改动需同步。
     """
     site_title = esc(config.get("title") or "Blog")
@@ -579,35 +580,22 @@ def login_page(*, config: dict, root: str = "") -> str:
   <div class="auth-card">
     <aside class="auth-card__aside">
       <span class="eyebrow">Account</span>
-      <h2 class="auth-aside__title">一个账号，<br>两种身份</h2>
+      <h2 class="auth-aside__title">一个入口，<br>权限自动生效</h2>
       <p class="auth-aside__text">
-        普通用户可以评论、点赞、收藏文章；管理员在同一个账号里多一层权限，可以进入后台在线发文、
-        管理评论与用户。
+        所有人用同一个入口登录：填邮箱和密码就行，没有账号的话首次登录会自动创建。
+        能做什么由账号本身决定，不需要提前选入口。
       </p>
       <ul class="auth-aside__list">
-        <li>{_LOGIN_ICONS["user"]}<div><strong>普通用户</strong><span>评论 · 点赞 · 收藏 · 个人资料</span></div></li>
-        <li>{_LOGIN_ICONS["shield"]}<div><strong>管理员</strong><span>在线发文 · 评论审核 · 用户管理</span></div></li>
+        <li>{_LOGIN_ICONS["user"]}<div><strong>普通账号</strong><span>评论 · 点赞 · 收藏 · 个人资料</span></div></li>
+        <li>{_LOGIN_ICONS["shield"]}<div><strong>管理员账号</strong><span>登录后可自选：以普通用户浏览，或进入后台</span></div></li>
       </ul>
-      <p class="auth-aside__foot">管理员身份由邮箱白名单认定，普通账号选择管理员身份会被拒绝。</p>
+      <p class="auth-aside__foot">管理员由邮箱白名单认定，登录后才会出现身份选择。</p>
     </aside>
 
     <div class="auth-card__main">
       <div data-auth-form-wrap>
         <h1 class="auth-card__title" data-auth-title>登录 / 注册</h1>
         <p class="auth-card__lead" data-auth-lead>邮箱 + 密码登录；没有账号的话，首次登录会自动创建。</p>
-
-        <div class="role-switch" role="radiogroup" aria-label="登录身份">
-          <button class="role-btn is-active" type="button" role="radio" aria-checked="true" data-role="user">
-            <span class="role-btn__icon">{_LOGIN_ICONS["user"]}</span>
-            <span class="role-btn__label">普通用户</span>
-            <span class="role-btn__desc">参与互动</span>
-          </button>
-          <button class="role-btn" type="button" role="radio" aria-checked="false" data-role="admin">
-            <span class="role-btn__icon">{_LOGIN_ICONS["shield"]}</span>
-            <span class="role-btn__label">管理员</span>
-            <span class="role-btn__desc">进入后台</span>
-          </button>
-        </div>
 
         <form class="auth-form" data-auth-form novalidate>
           <label class="field">
@@ -653,6 +641,31 @@ def login_page(*, config: dict, root: str = "") -> str:
 
         <p class="auth-foot">
           登录即表示你同意本站以最小必要范围保存账号信息。忘记密码可改用「邮箱验证码」登录。
+        </p>
+      </div>
+
+      <div data-identity-pick hidden>
+        <h1 class="auth-card__title">选择进入身份</h1>
+        <p class="auth-card__lead">
+          <strong data-pick-email>—</strong> 属于管理员账号，请选择这次要以什么身份进入。
+        </p>
+
+        <div class="role-switch">
+          <button class="role-btn" type="button" data-pick="user">
+            <span class="role-btn__icon">{_LOGIN_ICONS["user"]}</span>
+            <span class="role-btn__label">以普通用户身份进入</span>
+            <span class="role-btn__desc">前台浏览，评论 · 点赞 · 收藏</span>
+          </button>
+          <button class="role-btn" type="button" data-pick="admin">
+            <span class="role-btn__icon">{_LOGIN_ICONS["shield"]}</span>
+            <span class="role-btn__label">进入后台管理</span>
+            <span class="role-btn__desc">在线发文 · 评论审核 · 用户管理</span>
+          </button>
+        </div>
+
+        <p class="auth-foot">
+          之后随时可以在右上角账号菜单里切换身份。
+          <button class="link-btn" type="button" data-pick-signout>退出登录</button>
         </p>
       </div>
 

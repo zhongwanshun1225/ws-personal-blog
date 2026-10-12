@@ -1,10 +1,10 @@
 /**
  * 登录 / 注册页逻辑。
  *
- * 三种入口收敛在同一表单上：
- *   · 普通用户 —— 注册或登录，进入用户身份
- *   · 管理员   —— 登录后校验白名单，通过则进入管理员身份
- *   · 管理员也可以选「普通用户」入口登录，之后随时在顶栏切换身份
+ * 只有一个入口：不预选身份，直接填账号密码（或邮箱验证码）登录。
+ * 登录成功后按账号本身的权限分流：
+ *   · 普通账号        → 直接以普通用户身份进入（默认回到站内来源页）
+ *   · 管理员账号      → 多一步「选择进入身份」：以普通用户浏览 / 进入后台管理
  *
  * 登录方式：邮箱 + 密码、邮箱验证码（首次注册需同时设置密码）。
  */
@@ -33,15 +33,15 @@
   var errorBox = q('[data-auth-error]');
   var noticeBox = q('[data-auth-notice]');
   var formWrap = q('[data-auth-form-wrap]');
+  var pickWrap = q('[data-identity-pick]');
   var signedInWrap = q('[data-signed-in]');
-  var titleEl = q('[data-auth-title]');
-  var leadEl = q('[data-auth-lead]');
 
-  var role = 'user'; /* 'user' | 'admin' */
   var method = 'password'; /* 'password' | 'otp' */
   var pendingOtp = null; /* { email, verificationId, isExistingUser } */
   var countdownTimer = null;
   var busy = false;
+  var pickBusy = false;
+
 
   /* ---------------- 提示 ---------------- */
 
@@ -97,38 +97,6 @@
     return C.root + 'index.html';
   }
 
-  function wantedRole() {
-    var params = new URLSearchParams(location.search);
-    return params.get('role') === 'admin' ? 'admin' : 'user';
-  }
-
-  /* ---------------- 身份切换 ---------------- */
-
-  function applyRole(next, persist) {
-    role = next === 'admin' ? 'admin' : 'user';
-    qa('[data-role]').forEach(function (btn) {
-      var active = btn.getAttribute('data-role') === role;
-      btn.classList.toggle('is-active', active);
-      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-    if (titleEl) titleEl.textContent = role === 'admin' ? '管理员登录' : '登录 / 注册';
-    if (leadEl) {
-      leadEl.textContent =
-        role === 'admin'
-          ? '管理员登录后会校验白名单。同一个账号也可以改用「普通用户」身份登录。'
-          : '注册后可以评论、点赞与收藏文章。管理员请切换到「管理员」入口。';
-    }
-    if (persist && C.setIdentity) C.setIdentity(role === 'admin' ? 'admin' : 'user');
-    document.documentElement.setAttribute('data-auth-role', role);
-  }
-
-  qa('[data-role]').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      showError('');
-      applyRole(btn.getAttribute('data-role'), false);
-    });
-  });
-
   /* ---------------- 登录方式切换 ---------------- */
 
   function applyMethod(next) {
@@ -142,9 +110,8 @@
       if (panel.getAttribute('data-panel') === method) panel.removeAttribute('hidden');
       else panel.setAttribute('hidden', '');
     });
-    var label = method === 'otp' ? '登录 / 注册' : '登录';
     if (submitBtn && !busy) {
-      submitBtn.textContent = role === 'admin' ? '以管理员身份登录' : label;
+      submitBtn.textContent = method === 'otp' ? '登录 / 注册' : '登录';
       delete submitBtn.dataset.idle;
     }
     showError('');
@@ -158,25 +125,59 @@
 
   /* ---------------- 登录成功后的收尾 ---------------- */
 
-  function afterLogin(roleWanted) {
+  /** 展示「选择进入身份」——只有白名单里的管理员账号会走到这里。 */
+  function showIdentityPick() {
+    var user = C.currentUser();
+    var mail = q('[data-pick-email]');
+    if (mail) mail.textContent = (user && (user.email || user.phone)) || '当前账号';
+    if (formWrap) formWrap.setAttribute('hidden', '');
+    if (signedInWrap) signedInWrap.setAttribute('hidden', '');
+    if (pickWrap) pickWrap.removeAttribute('hidden');
+    setBusy(false);
+    showError('');
+  }
+
+  function enterAs(target) {
+    return C.setIdentity(target).then(function (ok) {
+      pickBusy = false;
+      if (!ok) return;
+      if (target === 'admin') {
+        location.href = C.root + 'admin.html';
+        return;
+      }
+      var params = new URLSearchParams(location.search);
+      location.href = params.get('next') ? nextUrl() : C.root + 'account.html';
+    });
+  }
+
+  qa('[data-pick]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (pickBusy) return;
+      pickBusy = true;
+      showError('');
+      enterAs(btn.getAttribute('data-pick') === 'admin' ? 'admin' : 'user');
+    });
+  });
+
+  var pickSignOut = q('[data-pick-signout]');
+  if (pickSignOut) {
+    pickSignOut.addEventListener('click', function () {
+      pickSignOut.disabled = true;
+      C.signOut().then(function () {
+        location.reload();
+      });
+    });
+  }
+
+  /** 登录成功后按账号权限分流。 */
+  function afterLogin() {
     return C.refresh().then(function () {
-      if (roleWanted === 'admin') {
-        if (!C.isAdminSync()) {
-          return C.signOut().then(function () {
-            showError('这个账号没有管理员权限，已自动退出。你可以改用「普通用户」身份登录。');
-            applyRole('user', false);
-            setBusy(false);
-          });
-        }
-        return C.setIdentity('admin').then(function () {
-          location.href = C.root + 'admin.html';
-        });
+      if (C.isAdminSync()) {
+        showIdentityPick();
+        return;
       }
       C.setIdentity('user');
-      return new Promise(function (resolve) {
-        location.href = nextUrl();
-        resolve();
-      });
+      location.href = nextUrl();
     });
   }
 
@@ -203,7 +204,7 @@
       C.signInWithPassword(email, password)
         .then(function (res) {
           if (res && res.error) throw res.error;
-          return afterLogin(role);
+          return afterLogin();
         })
         .catch(function (err) {
           setBusy(false);
@@ -236,7 +237,7 @@
       .then(function (res) {
         if (res && res.error) throw res.error;
         pendingOtp = null;
-        return afterLogin(role);
+        return afterLogin();
       })
       .catch(function (err) {
         setBusy(false);
@@ -367,7 +368,6 @@
     }
   }
 
-  applyRole(wantedRole(), false);
   applyMethod('password');
   checkOrigin();
   bindSignedIn();
@@ -377,12 +377,6 @@
       C.onSessionChange(function () {
         renderSignedIn();
       });
-      return;
-    }
-    /* 已登录的普通用户访问管理员入口时，直接把身份切过去更顺手 */
-    var params = new URLSearchParams(location.search);
-    if (params.get('role') === 'admin' && C.isAdminSync() && !C.isAdminMode()) {
-      applyRole('admin', false);
     }
   });
 })();
