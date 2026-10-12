@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 构建产物
+dist/
+
+# 开发辅助
+.preview/
+
+# 本地工作笔记（如需纳入版本管理，删掉这一行即可）
+.workbuddy/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
