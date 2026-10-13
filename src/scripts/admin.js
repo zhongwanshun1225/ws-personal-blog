@@ -1,8 +1,13 @@
 /**
  * 管理员后台。
  *
- * 四个面板：文章管理（在线写 / 编辑 / 发布 / 删除）、评论管理（隐藏 / 恢复 / 删除）、
- * 用户列表、管理员邮箱白名单。
+ * 五个面板：文章管理（在线写 / 编辑 / 发布 / 删除）、内容审核（用户投稿的通过 / 驳回）、
+ * 评论管理（隐藏 / 恢复 / 删除）、用户管理、管理员邮箱白名单。
+ *
+ * 投稿状态机：
+ *   draft（作者草稿）→ pending（提交待审）→ published（审核通过，前台可见）
+ *                                          ↘ rejected（驳回，作者可见理由并改稿重投）
+ *   管理员自己写的文章不走审核，可直接 draft ↔ published。
  *
  * 权限说明（两层，缺一不可）：
  *   1. 服务端 RLS + SECURITY DEFINER 函数 —— 非管理员调用会被数据库直接拒绝
@@ -48,6 +53,10 @@
   var previewBox = q('[data-post-preview-box]');
   var postsBody = q('[data-admin-posts]');
   var postCountEl = q('[data-post-count]');
+  var reviewBody = q('[data-admin-review]');
+  var reviewedBody = q('[data-admin-reviewed]');
+  var reviewCountEl = q('[data-review-count]');
+  var reviewBadgeEl = q('[data-review-badge]');
   var usersBody = q('[data-admin-users]');
   var commentsBody = q('[data-admin-comments]');
   var commentCountEl = q('[data-comment-total]');
@@ -59,7 +68,22 @@
   var busy = false;
   var editingSlug = '';
   var allComments = [];
+  var allUsers = [];
+  var allPosts = [];
   var commentFilter = 'all';
+
+  /* 状态徽章：draft / pending / published / rejected */
+  var STATUS_META = {
+    draft: { label: '草稿', cls: 'status-badge--draft' },
+    pending: { label: '待审核', cls: 'status-badge--pending' },
+    published: { label: '已发布', cls: 'status-badge--published' },
+    rejected: { label: '未通过', cls: 'status-badge--rejected' },
+  };
+
+  function statusBadge(status) {
+    var meta = STATUS_META[status] || { label: status || '未知', cls: '' };
+    return '<span class="status-badge ' + meta.cls + '">' + esc(meta.label) + '</span>';
+  }
 
   /* ---------------- 小工具 ---------------- */
 
@@ -127,17 +151,30 @@
 
   /* ---------------- 概览数据 ---------------- */
 
+  function setReviewBadge(count) {
+    if (!reviewBadgeEl) return;
+    if (count > 0) {
+      reviewBadgeEl.textContent = String(count);
+      reviewBadgeEl.removeAttribute('hidden');
+    } else {
+      reviewBadgeEl.setAttribute('hidden', '');
+    }
+  }
+
   function loadStats() {
     return api(C.db().rpc('admin_stats'), '概览数据加载失败').then(function (data) {
       var stats = data && typeof data === 'object' ? data : {};
       setText(q('[data-stat-users]'), stats.users || 0);
+      setText(q('[data-stat-disabled]'), stats.disabled_users || 0);
       setText(q('[data-stat-comments]'), stats.comments || 0);
       setText(q('[data-stat-hidden]'), stats.hidden || 0);
       setText(q('[data-stat-likes]'), stats.likes || 0);
       setText(q('[data-stat-posts]'), stats.posts || 0);
       setText(q('[data-stat-drafts]'), stats.drafts || 0);
+      setText(q('[data-stat-pending]'), stats.pending || 0);
       setText(q('[data-stat-today]'), stats.today_comments || 0);
       setText(q('[data-stat-views]'), Number(stats.views || 0).toLocaleString());
+      setReviewBadge(Number(stats.pending || 0));
       return stats;
     });
   }
@@ -293,16 +330,23 @@
     });
   }
 
+  function authorCell(post) {
+    var name = post.author_name || post.author_email || '未知作者';
+    return (
+      '<td><div class="admin-cell__title">' + esc(name) +
+      (post.is_own ? ' <span class="admin-tag">我</span>' : '') + '</div>' +
+      '<div class="admin-cell__sub mono">' + esc(post.author_email || post.author_id || '') + '</div></td>'
+    );
+  }
+
   function postRow(post) {
     var isPublished = post.status === 'published';
-    var badge = isPublished
-      ? '<span class="status-badge" data-status="published">已发布</span>'
-      : '<span class="status-badge" data-status="draft">草稿</span>';
     return (
       '<tr data-post-row="' + esc(post.slug) + '">' +
       '<td><div class="admin-cell__title">' + esc(post.title) + '</div>' +
       '<div class="admin-cell__sub mono">' + esc(post.slug) + '</div></td>' +
-      '<td>' + badge + '</td>' +
+      authorCell(post) +
+      '<td>' + statusBadge(post.status) + '</td>' +
       '<td class="admin-cell__sub">' + esc(C.formatDate(post.updated_at || post.created_at)) + '</td>' +
       '<td class="admin-cell__actions">' +
       '<button class="btn btn--ghost btn--sm" type="button" data-post-edit="' + esc(post.slug) + '">编辑</button>' +
@@ -314,18 +358,45 @@
     );
   }
 
-  function loadPosts() {
+  /** 把某篇文章载入左侧编辑器（文章管理与内容审核共用）。 */
+  function loadIntoEditor(slug) {
+    editingSlug = slug;
     return api(
-      C.db().from('cloud_posts').select('id, slug, title, status, updated_at, created_at').order('updated_at', { ascending: false }).limit(200),
-      '文章列表加载失败'
-    ).then(function (rows) {
+      C.db().from('cloud_posts')
+        .select('title, slug, summary, tags, content_md, status, review_note')
+        .eq('slug', slug).maybeSingle(),
+      '读取文章失败'
+    ).then(function (row) {
+      if (!row) throw new Error('文章不存在');
+      if (fieldTitle) fieldTitle.value = row.title || '';
+      if (fieldSlug) fieldSlug.value = row.slug || '';
+      if (fieldSummary) fieldSummary.value = row.summary || '';
+      if (fieldTags) fieldTags.value = tagsToText(row.tags);
+      if (fieldContent) fieldContent.value = row.content_md || '';
+      if (fieldStatus) fieldStatus.value = row.status || 'draft';
+      if (formTitle) formTitle.textContent = '编辑：' + (row.title || '');
+      if (saveBtn) saveBtn.textContent = '保存修改';
+      if (previewBox) {
+        previewBox.innerHTML = '';
+        previewBox.setAttribute('hidden', '');
+      }
+      if (fieldContent) fieldContent.focus();
+      return row;
+    });
+  }
+
+  function loadPosts() {
+    return api(C.db().rpc('admin_posts'), '文章列表加载失败').then(function (rows) {
       var list = rows || [];
+      allPosts = list;
       setText(postCountEl, list.length);
-      if (!postsBody) return list;
-      postsBody.innerHTML = list.length
-        ? list.map(postRow).join('')
-        : '<tr><td colspan="4" class="admin-empty">还没有文章，用左边的编辑器写下第一篇。</td></tr>';
+      if (postsBody) {
+        postsBody.innerHTML = list.length
+          ? list.map(postRow).join('')
+          : '<tr><td colspan="5" class="admin-empty">还没有文章，用左边的编辑器写下第一篇。</td></tr>';
+      }
       bindPostActions(list);
+      renderReview();
       return list;
     });
   }
@@ -338,25 +409,11 @@
 
     qa('[data-post-edit]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        var post = bySlug[btn.getAttribute('data-post-edit')];
-        if (!post) return;
-        editingSlug = post.slug;
-        api(C.db().from('cloud_posts').select('title, slug, summary, tags, content_md, status').eq('slug', post.slug).maybeSingle(), '读取文章失败')
-          .then(function (row) {
-            if (!row) throw new Error('文章不存在');
-            if (fieldTitle) fieldTitle.value = row.title || '';
-            if (fieldSlug) fieldSlug.value = row.slug || '';
-            if (fieldSummary) fieldSummary.value = row.summary || '';
-            if (fieldTags) fieldTags.value = tagsToText(row.tags);
-            if (fieldContent) fieldContent.value = row.content_md || '';
-            if (fieldStatus) fieldStatus.value = row.status || 'draft';
-            if (formTitle) formTitle.textContent = '编辑：' + (row.title || '');
-            if (saveBtn) saveBtn.textContent = '保存修改';
-            if (previewBox) {
-              previewBox.innerHTML = '';
-              previewBox.setAttribute('hidden', '');
-            }
-            if (fieldContent) fieldContent.focus();
+        var slug = btn.getAttribute('data-post-edit');
+        if (!bySlug[slug]) return;
+        showPanel('posts');
+        loadIntoEditor(slug)
+          .then(function () {
             root.scrollIntoView({ behavior: 'smooth', block: 'start' });
           })
           .catch(function () { /* api() 已提示 */ });
@@ -402,6 +459,182 @@
     });
   }
 
+  /* ---------------- 内容审核 ---------------- */
+
+  var REVIEW_VERB = { approve: '已通过并发布', reject: '已驳回', unpublish: '已下架为草稿' };
+
+  function review(slug, action, note) {
+    return api(
+      C.db().rpc('admin_review_post', { p_slug: slug, p_action: action, p_note: note || null }),
+      '审核操作失败'
+    ).then(function (res) {
+      var payload = res && typeof res === 'object' ? res : {};
+      if (payload.ok !== true) throw new Error(payload.error || '审核未生效');
+      toast(REVIEW_VERB[action] || '已处理');
+      return Promise.all([loadPosts(), loadStats()]);
+    });
+  }
+
+  function reviewRow(post) {
+    var name = post.author_name || post.author_email || '未知作者';
+    return (
+      '<tr data-review-row="' + esc(post.slug) + '">' +
+      '<td><div class="admin-cell__title">' + esc(post.title) + '</div>' +
+      '<div class="admin-cell__sub mono">' + esc(post.slug) + '</div>' +
+      (post.summary ? '<div class="admin-cell__sub">' + esc(post.summary) + '</div>' : '') +
+      '</td>' +
+      '<td><div class="admin-cell__title">' + esc(name) + '</div>' +
+      '<div class="admin-cell__sub mono">' + esc(post.author_email || '') + '</div></td>' +
+      '<td class="admin-cell__sub">' + esc(C.formatDateTime(post.updated_at || post.created_at)) + '</td>' +
+      '<td class="admin-cell__sub">' + esc(String(post.body_length || 0)) + ' 字</td>' +
+      '<td class="admin-cell__actions">' +
+      '<button class="btn btn--primary btn--sm" type="button" data-review-approve="' + esc(post.slug) + '">通过</button>' +
+      '<button class="btn btn--ghost btn--sm" type="button" data-review-reject="' + esc(post.slug) + '">驳回</button>' +
+      '<button class="btn btn--ghost btn--sm" type="button" data-review-open="' + esc(post.slug) + '">查看</button>' +
+      '<button class="btn btn--danger btn--sm" type="button" data-review-delete="' + esc(post.slug) + '">删除</button>' +
+      '</td></tr>'
+    );
+  }
+
+  function reviewedRow(post) {
+    var name = post.author_name || post.author_email || '未知作者';
+    var restartable = post.status === 'rejected';
+    return (
+      '<tr data-reviewed-row="' + esc(post.slug) + '">' +
+      '<td><div class="admin-cell__title">' + esc(post.title) + '</div>' +
+      '<div class="admin-cell__sub mono">' + esc(post.slug) + '</div></td>' +
+      '<td><div class="admin-cell__title">' + esc(name) + '</div>' +
+      '<div class="admin-cell__sub mono">' + esc(post.author_email || '') + '</div></td>' +
+      '<td>' + statusBadge(post.status) +
+      (post.review_note ? '<div class="admin-cell__sub">理由：' + esc(post.review_note) + '</div>' : '') +
+      '</td>' +
+      '<td class="admin-cell__sub">' + esc(C.formatDateTime(post.reviewed_at)) + '</td>' +
+      '<td class="admin-cell__actions">' +
+      (restartable
+        ? '<button class="btn btn--primary btn--sm" type="button" data-review-approve="' + esc(post.slug) + '">通过</button>'
+        : '<button class="btn btn--ghost btn--sm" type="button" data-review-unpublish="' + esc(post.slug) + '">下架</button>') +
+      '<button class="btn btn--ghost btn--sm" type="button" data-review-open="' + esc(post.slug) + '">查看</button>' +
+      '<button class="btn btn--danger btn--sm" type="button" data-review-delete="' + esc(post.slug) + '">删除</button>' +
+      '</td></tr>'
+    );
+  }
+
+  function renderReview() {
+    var posts = allPosts || [];
+    var pending = posts.filter(function (p) { return p.status === 'pending'; });
+    var handled = posts.filter(function (p) {
+      return p.status === 'rejected' || (p.status === 'published' && p.reviewed_at);
+    }).sort(function (a, b) {
+      return String(b.reviewed_at || '').localeCompare(String(a.reviewed_at || ''));
+    }).slice(0, 40);
+
+    setText(reviewCountEl, pending.length);
+    setReviewBadge(pending.length);
+
+    if (reviewBody) {
+      reviewBody.innerHTML = pending.length
+        ? pending.map(reviewRow).join('')
+        : '<tr><td colspan="5" class="admin-empty">当前没有待审核的投稿。</td></tr>';
+    }
+    if (reviewedBody) {
+      reviewedBody.innerHTML = handled.length
+        ? handled.map(reviewedRow).join('')
+        : '<tr><td colspan="5" class="admin-empty">还没有审核记录。</td></tr>';
+    }
+    bindReviewActions();
+  }
+
+  /** 在该行下方展开「驳回理由」输入行。 */
+  function openRejectForm(slug, row) {
+    var opened = q('[data-review-reject-form]');
+    if (opened) opened.parentNode.removeChild(opened);
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-review-reject-form', slug);
+    tr.innerHTML =
+      '<td colspan="5"><div class="review-reject">' +
+      '<textarea class="field__input" rows="2" maxlength="200" data-review-note ' +
+      'placeholder="驳回理由（会展示给作者，留空也可以）"></textarea>' +
+      '<div class="review-reject__foot">' +
+      '<button class="btn btn--danger btn--sm" type="button" data-review-reject-confirm="' + esc(slug) + '">确认驳回</button>' +
+      '<button class="btn btn--ghost btn--sm" type="button" data-review-reject-cancel>取消</button>' +
+      '</div></div></td>';
+    row.parentNode.insertBefore(tr, row.nextSibling);
+    var textarea = tr.querySelector('[data-review-note]');
+    if (textarea) textarea.focus();
+    tr.querySelector('[data-review-reject-cancel]').addEventListener('click', function () {
+      tr.parentNode.removeChild(tr);
+    });
+    tr.querySelector('[data-review-reject-confirm]').addEventListener('click', function (event) {
+      var confirmBtn = event.currentTarget;
+      confirmBtn.disabled = true;
+      review(slug, 'reject', textarea ? textarea.value : '').catch(function () {
+        confirmBtn.disabled = false;
+      });
+    });
+  }
+
+  function bindReviewActions() {
+    qa('[data-review-approve]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var slug = btn.getAttribute('data-review-approve');
+        btn.disabled = true;
+        review(slug, 'approve').catch(function () { btn.disabled = false; });
+      });
+    });
+
+    qa('[data-review-unpublish]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var slug = btn.getAttribute('data-review-unpublish');
+        if (!window.confirm('确定把「' + slug + '」下架吗？\n下架后文章会退回草稿状态，前台立即不可见。')) return;
+        btn.disabled = true;
+        review(slug, 'unpublish').catch(function () { btn.disabled = false; });
+      });
+    });
+
+    qa('[data-review-reject]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var slug = btn.getAttribute('data-review-reject');
+        var row = btn.closest('[data-review-row]');
+        if (row) openRejectForm(slug, row);
+      });
+    });
+
+    qa('[data-review-open]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var slug = btn.getAttribute('data-review-open');
+        showPanel('posts');
+        loadIntoEditor(slug)
+          .then(function (row) {
+            if (!previewBox || !fieldContent) return;
+            previewBox.removeAttribute('hidden');
+            previewBox.innerHTML = window.WSBlogCloudMarkdown
+              ? window.WSBlogCloudMarkdown.render(fieldContent.value)
+              : '<p>' + esc(fieldContent.value).replace(/\n/g, '<br>') + '</p>';
+            root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            toast('已载入编辑器，可在此查看全文或直接修改');
+            return row;
+          })
+          .catch(function () { /* api() 已提示 */ });
+      });
+    });
+
+    qa('[data-review-delete]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var slug = btn.getAttribute('data-review-delete');
+        if (!window.confirm('确定删除投稿「' + slug + '」吗？删除后无法恢复。')) return;
+        btn.disabled = true;
+        api(C.db().from('cloud_posts').delete().eq('slug', slug).select(), '删除失败')
+          .then(function (rows) {
+            if (!rows || !rows.length) throw new Error('没有权限或文章不存在');
+            toast('投稿已删除');
+            if (editingSlug === slug) resetForm();
+            return Promise.all([loadPosts(), loadStats()]);
+          })
+          .catch(function () { btn.disabled = false; });
+      });
+    });
+  }
+
   /* ---------------- 评论管理 ---------------- */
 
   function commentRow(item) {
@@ -419,7 +652,7 @@
       '<div class="admin-cell__sub mono">' + esc(item.post_slug) + '</div></td>' +
       '<td class="admin-cell__text">' + esc(item.content) + '</td>' +
       '<td class="admin-cell__sub">' + esc(C.formatDateTime(item.created_at)) + '</td>' +
-      '<td>' + (hidden ? '<span class="status-badge" data-status="hidden">已隐藏</span>' : '<span class="status-badge" data-status="published">显示中</span>') + '</td>' +
+      '<td>' + (hidden ? '<span class="status-badge status-badge--hidden">已隐藏</span>' : '<span class="status-badge status-badge--visible">显示中</span>') + '</td>' +
       '<td class="admin-cell__actions">' +
       '<button class="btn btn--ghost btn--sm" type="button" data-comment-toggle="' + esc(item.id) + '" data-next="' + (hidden ? 'visible' : 'hidden') + '">' +
       (hidden ? '恢复' : '隐藏') + '</button>' +
@@ -493,26 +726,187 @@
     });
   });
 
-  /* ---------------- 用户列表 ---------------- */
+  /* ---------------- 用户管理 ---------------- */
+
+  /** 复制一段给用户看的重置指引（剪贴板不可用时退回到临时 textarea）。 */
+  function copyText(text) {
+    function fallback() {
+      var area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(area);
+      area.select();
+      var ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch (err) {
+        ok = false;
+      }
+      document.body.removeChild(area);
+      return ok;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () {
+        return true;
+      }).catch(function () {
+        return fallback();
+      });
+    }
+    return Promise.resolve(fallback());
+  }
+
+  function resetGuide(user) {
+    var origin = location.origin + '/';
+    return (
+      '【密码重置指引】\n' +
+      '账号：' + (user.email || '') + '\n' +
+      '请打开 ' + origin + 'login.html 点击「忘记密码」，' +
+      '用该邮箱获取验证码后设置新密码。\n' +
+      '（密码由云平台加密托管，管理员无法直接查看或代改。）'
+    );
+  }
+
+  function userRow(user) {
+    var uid = user.owner_id || '';
+    var email = user.email || '';
+    var disabled = user.status === 'disabled';
+    var name = user.nickname || (email ? email.split('@')[0] : '未命名');
+    var avatar = user.avatar_url
+      ? '<img class="admin-avatar" src="' + esc(user.avatar_url) + '" alt="" loading="lazy">'
+      : '<span class="admin-avatar admin-avatar--text">' + esc(name.slice(0, 1).toUpperCase()) + '</span>';
+
+    var statusBadge = disabled
+      ? '<span class="status-badge status-badge--hidden">已禁用</span>'
+      : '<span class="status-badge status-badge--published">正常</span>';
+    var roleBadge = user.is_admin
+      ? '<span class="status-badge status-badge--admin">管理员</span>'
+      : '<span class="status-badge">普通用户</span>';
+
+    var actions;
+    if (user.is_self) {
+      actions = '<span class="admin-cell__sub">当前登录账号</span>';
+    } else {
+      actions =
+        '<button class="btn btn--ghost btn--sm" type="button" data-user-status="' + esc(uid) +
+        '" data-next="' + (disabled ? 'active' : 'disabled') + '">' + (disabled ? '启用' : '禁用') + '</button>' +
+        '<button class="btn btn--ghost btn--sm" type="button" data-user-admin="' + esc(email) +
+        '" data-next="' + (user.is_admin ? 'remove' : 'add') + '">' +
+        (user.is_admin ? '取消管理员' : '设为管理员') + '</button>' +
+        '<button class="btn btn--ghost btn--sm" type="button" data-user-reset="' + esc(email) + '">重置密码</button>' +
+        '<button class="btn btn--danger btn--sm" type="button" data-user-delete="' + esc(uid) +
+        '" data-name="' + esc(name) + '">删除用户</button>';
+    }
+
+    return (
+      '<tr data-user-row="' + esc(uid) + '">' +
+      '<td><div class="admin-cell__user">' + avatar +
+      '<div><div class="admin-cell__title">' + esc(name) +
+      (user.is_self ? ' <span class="admin-tag">我</span>' : '') + '</div>' +
+      '<div class="admin-cell__sub mono">' + esc(uid) + '</div></div></div></td>' +
+      '<td class="admin-cell__sub mono">' + esc(email || '—') + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td>' + roleBadge + '</td>' +
+      '<td class="admin-cell__sub">' + esc(String(user.comment_count || 0)) + ' 评论 · ' +
+      esc(String(user.like_count || 0)) + ' 点赞</td>' +
+      '<td class="admin-cell__sub">' + esc(C.formatDate(user.created_at)) + '</td>' +
+      '<td class="admin-cell__actions">' + actions + '</td>' +
+      '</tr>'
+    );
+  }
 
   function loadUsers() {
     return api(C.db().rpc('admin_users'), '用户列表加载失败').then(function (rows) {
       var list = rows || [];
+      allUsers = list;
       if (!usersBody) return list;
       usersBody.innerHTML = list.length
-        ? list.map(function (user) {
-            return (
-              '<tr>' +
-              '<td><div class="admin-cell__title">' + esc(user.nickname || '未命名') + '</div>' +
-              '<div class="admin-cell__sub mono">' + esc(user.owner_id) + '</div></td>' +
-              '<td class="admin-cell__text">' + esc(user.bio || '—') + '</td>' +
-              '<td class="admin-cell__sub">' + esc(String(user.comment_count || 0)) + ' 条评论 / ' + esc(String(user.like_count || 0)) + ' 次点赞</td>' +
-              '<td class="admin-cell__sub">' + esc(C.formatDate(user.created_at)) + '</td>' +
-              '</tr>'
-            );
-          }).join('')
-        : '<tr><td colspan="4" class="admin-empty">还没有用户注册。</td></tr>';
+        ? list.map(userRow).join('')
+        : '<tr><td colspan="7" class="admin-empty">还没有用户注册。</td></tr>';
+      bindUserActions(list);
       return list;
+    });
+  }
+
+  function bindUserActions(list) {
+    qa('[data-user-status]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var uid = btn.getAttribute('data-user-status');
+        var next = btn.getAttribute('data-next');
+        var label = next === 'disabled' ? '禁用' : '启用';
+        if (next === 'disabled' && !window.confirm('确定禁用该账号吗？\n禁用后该用户仍能登录浏览，但无法评论、点赞、收藏或修改资料。')) return;
+        btn.disabled = true;
+        api(C.db().rpc('admin_set_user_status', { p_owner: uid, p_status: next }), label + '失败')
+          .then(function (ok) {
+            if (ok !== true) throw new Error('操作未生效（不能对自己操作）');
+            toast('已' + label + '该账号');
+            return Promise.all([loadUsers(), loadStats()]);
+          })
+          .catch(function () {})
+          .then(function () {
+            btn.disabled = false;
+          });
+      });
+    });
+
+    qa('[data-user-admin]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var email = btn.getAttribute('data-user-admin');
+        var next = btn.getAttribute('data-next');
+        var promote = next === 'add';
+        if (!window.confirm(
+          promote
+            ? '把 ' + email + ' 设为管理员？\n对方下次登录后即可进入后台。'
+            : '取消 ' + email + ' 的管理员权限？'
+        )) return;
+        btn.disabled = true;
+        var call = promote
+          ? C.db().rpc('admin_add_email', { p_email: email, p_note: '后台直接授权' })
+          : C.db().rpc('admin_remove_email', { p_email: email });
+        api(call, promote ? '设置失败' : '取消失败')
+          .then(function () {
+            toast(promote ? '已设为管理员' : '已取消管理员');
+            return Promise.all([loadUsers(), loadEmails()]);
+          })
+          .catch(function () {})
+          .then(function () {
+            btn.disabled = false;
+          });
+      });
+    });
+
+    qa('[data-user-reset]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var email = btn.getAttribute('data-user-reset');
+        var user = (allUsers || []).find(function (row) {
+          return row.email === email;
+        }) || { email: email };
+        copyText(resetGuide(user)).then(function (ok) {
+          toast(ok ? '重置指引已复制，可发给该用户' : '复制失败，请手动告知用户走「忘记密码」');
+        });
+      });
+    });
+
+    qa('[data-user-delete]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var uid = btn.getAttribute('data-user-delete');
+        var name = btn.getAttribute('data-name') || uid;
+        if (!window.confirm(
+          '确定删除用户「' + name + '」吗？\n\n将删除他/她的全部评论、点赞与收藏，并清空个人资料、禁用账号。\n' +
+          '（云平台上的登录账号本身无法删除，如需彻底注销请联系平台。）'
+        )) return;
+        btn.disabled = true;
+        api(C.db().rpc('admin_delete_user', { p_owner: uid }), '删除失败')
+          .then(function (ok) {
+            if (ok !== true) throw new Error('操作未生效（不能删除自己）');
+            toast('用户内容已清空并禁用');
+            return Promise.all([loadUsers(), loadStats(), loadComments()]);
+          })
+          .catch(function () {})
+          .then(function () {
+            btn.disabled = false;
+          });
+      });
     });
   }
 

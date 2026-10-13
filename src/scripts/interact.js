@@ -164,6 +164,7 @@
       goLogin();
       return;
     }
+    if (C.requireActive()) return;
     busyLike = true;
     renderActions();
     var wasLiked = state.liked;
@@ -203,6 +204,7 @@
       goLogin();
       return;
     }
+    if (C.requireActive()) return;
     busyBookmark = true;
     renderActions();
     var wasBookmarked = state.bookmarked;
@@ -365,6 +367,7 @@
       goLogin();
       return;
     }
+    if (C.requireActive()) return;
     var content = ((inputEl && inputEl.value) || '').trim();
     if (!content) {
       toast('评论内容不能为空');

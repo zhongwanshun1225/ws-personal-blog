@@ -59,6 +59,7 @@ from wsblog.templates.pages import (  # noqa: E402
     related_posts_block,
     tag_page,
     tags_page,
+    write_page,
 )
 from wsblog.util import escape_html as esc  # noqa: E402
 from wsblog.util import iso_date, root_prefix, slugify, truncate, utc_string  # noqa: E402
@@ -70,12 +71,14 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "site.config.json")
 
 # 需要拷贝到 dist/assets/ 的浏览器端脚本
 ASSET_SCRIPTS = (
+    "theme.js",
     "app.js",
     "cloud.js",
     "cloud-markdown.js",
     "auth.js",
     "interact.js",
     "account.js",
+    "write.js",
     "admin.js",
     "cloud-posts.js",
     "upload.js",
@@ -393,6 +396,20 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 cloud=True,
                 scripts=["upload.js", "account.js"],
                 content=account_page(config=config, root=""),
+            ),
+        )
+        write(
+            "write.html",
+            layout(
+                config=config,
+                title="写文章",
+                description="用 Markdown 撰写技术分享，保存草稿或提交给站长审核。",
+                root="",
+                current="",
+                cloud=True,
+                vendor=["marked", "highlight"],
+                scripts=["cloud-markdown.js", "upload.js", "write.js"],
+                content=write_page(config=config, root=""),
             ),
         )
         write(

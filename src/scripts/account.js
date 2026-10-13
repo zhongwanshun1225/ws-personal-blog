@@ -116,6 +116,7 @@
   }
 
   function saveProfile() {
+    if (C.requireActive()) return;
     var payload = {
       nickname: (nicknameInput && nicknameInput.value || '').trim().slice(0, 40),
       avatar_url: (avatarInput && avatarInput.value || '').trim().slice(0, 500),
@@ -186,6 +187,7 @@
         toast('上传模块未加载');
         return;
       }
+      if (C.requireActive()) return;
       var uid = C.currentUid();
       if (!uid) {
         toast('登录状态已失效，请重新登录');
@@ -226,6 +228,66 @@
         ? '<img src="' + C.escapeHtml(value) + '" alt="" loading="lazy">'
         : initials((nicknameInput && nicknameInput.value) || C.displayName());
     });
+  }
+
+  /* ---------------- 我的投稿 ---------------- */
+
+  var myPostsEl = q('[data-my-posts]');
+  var myPostCountEl = q('[data-my-post-count]');
+
+  var POST_STATUS = {
+    draft: { label: '草稿', cls: 'status-badge--draft' },
+    pending: { label: '待审核', cls: 'status-badge--pending' },
+    published: { label: '已发布', cls: 'status-badge--published' },
+    rejected: { label: '未通过', cls: 'status-badge--rejected' },
+  };
+
+  function myPostsRow(post) {
+    var meta = POST_STATUS[post.status] || {};
+    var published = post.status === 'published';
+    var editHref = 'write.html?slug=' + encodeURIComponent(post.slug);
+    return (
+      '<li class="stack-item">' +
+      '<div class="stack-item__head">' +
+      '<span class="stack-item__title">' + C.escapeHtml(post.title) + '</span>' +
+      '<span class="status-badge ' + (meta.cls || '') + '">' + C.escapeHtml(meta.label || post.status) + '</span>' +
+      '<span class="stack-item__time">' + C.escapeHtml(C.formatDate(post.updated_at || post.created_at)) + '</span>' +
+      '</div>' +
+      (post.status === 'rejected' && post.review_note
+        ? '<p class="stack-item__note">未通过理由：' + C.escapeHtml(post.review_note) + '</p>'
+        : '') +
+      '<div class="stack-item__actions">' +
+      (published
+        ? '<a class="link-btn" href="' + C.escapeHtml(postUrl(post.slug)) + '">阅读</a>'
+        : '<a class="link-btn" href="' + C.escapeHtml(editHref) + '">编辑</a>') +
+      '</div>' +
+      '</li>'
+    );
+  }
+
+  function loadMyPosts() {
+    var uid = C.currentUid();
+    if (!uid || !myPostsEl) return Promise.resolve([]);
+    return C.db()
+      .from('cloud_posts')
+      .select('slug, title, status, review_note, created_at, updated_at, published_at')
+      .eq('author_id', uid)
+      .order('updated_at', { ascending: false })
+      .limit(30)
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var list = (res && res.data) || [];
+        if (myPostCountEl) myPostCountEl.textContent = String(list.length);
+        myPostsEl.innerHTML = list.length
+          ? list.map(myPostsRow).join('')
+          : '<li class="stack-empty">还没有投稿，<a href="write.html">写第一篇</a>。</li>';
+        return list;
+      })
+      .catch(function (err) {
+        console.warn('[account] 投稿加载失败', err && err.message);
+        myPostsEl.innerHTML = '<li class="stack-empty">投稿列表加载失败，请刷新重试。</li>';
+        return [];
+      });
   }
 
   /* ---------------- 我的评论 ---------------- */
@@ -405,5 +467,6 @@
       });
     loadComments();
     loadBookmarks();
+    loadMyPosts();
   });
 })();

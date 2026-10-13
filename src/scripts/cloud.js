@@ -24,6 +24,7 @@
   var sessionListeners = [];
   var currentSession = null;
   var adminFlag = null; /* null = 未知，true/false = 已判定 */
+  var accountInfo = null; /* my_account() 返回：uid / email / is_admin / is_active / status */
   var identity = 'user'; /* 当前使用的身份：'user' | 'admin' */
   var booted = false; /* 会话恢复完成前不渲染顶栏，避免「登录/注册」闪一下又变成用户菜单 */
 
@@ -133,6 +134,7 @@
 
   function notify() {
     booted = true;
+    renderAccountBanner();
     for (var i = 0; i < sessionListeners.length; i++) {
       try {
         sessionListeners[i](currentSession, adminFlag);
@@ -193,22 +195,89 @@
       });
   }
 
+  /** 读取当前账号状态（是否被禁用等）。失败时视为正常，避免误伤。 */
+  function loadAccount() {
+    return Promise.resolve()
+      .then(function () {
+        return cloud().database.rpc('my_account');
+      })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        accountInfo = (res && res.data) || null;
+        return accountInfo;
+      })
+      .catch(function (err) {
+        console.warn('[WSBlogCloud] 账号状态读取失败', err && err.message);
+        accountInfo = null;
+        return null;
+      });
+  }
+
+  /** 账号是否可用。被管理员禁用后仍能浏览，但不能评论 / 点赞 / 收藏 / 改资料。 */
+  function isActive() {
+    return accountInfo ? accountInfo.is_active !== false : true;
+  }
+
+  /** 写操作前的守卫：被禁用时提示并返回 true（已拦截）。 */
+  function requireActive() {
+    if (isActive()) return false;
+    toast('此账号已被管理员禁用，无法进行该操作');
+    return true;
+  }
+
+  /** 被禁用时在页面顶部插一条提示，未禁用则移除。 */
+  function renderAccountBanner() {
+    if (!document.body) return;
+    var node = document.querySelector('[data-account-banner]');
+    var disabled = !!currentSession && !!accountInfo && accountInfo.is_active === false;
+
+    if (!disabled) {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+      return;
+    }
+
+    if (!node) {
+      node = document.createElement('div');
+      node.className = 'account-banner';
+      node.setAttribute('data-account-banner', '');
+      document.body.insertBefore(node, document.body.firstChild);
+    }
+    node.innerHTML =
+      '<div class="wrap account-banner__inner">' +
+      '<span class="account-banner__text">此账号已被管理员禁用，当前只能浏览：' +
+      '评论、点赞、收藏与资料修改都已停用。如有疑问请联系站长。</span>' +
+      '<button class="btn btn--ghost btn--sm" type="button" data-account-banner-signout>退出登录</button>' +
+      '</div>';
+
+    var btn = node.querySelector('[data-account-banner-signout]');
+    if (btn) {
+      btn.addEventListener('click', function () {
+        signOut().then(function () {
+          toast('已退出登录');
+          location.reload();
+        });
+      });
+    }
+  }
+
   /** 刷新会话 + 管理员标记，并通知订阅者。 */
   function refresh() {
     return getSession()
       .then(function (session) {
         if (!session) {
           adminFlag = false;
+          accountInfo = null;
           notify();
           return null;
         }
-        return isAdmin().then(function () {
+        return Promise.all([isAdmin(), loadAccount()]).then(function () {
           notify();
           return session;
         });
       })
       .catch(function () {
         adminFlag = false;
+        accountInfo = null;
         notify();
         return null;
       });
@@ -224,6 +293,12 @@
 
   function verifyOtp(payload) {
     return cloud().auth.verifyOtp(payload);
+  }
+
+  /** 忘记密码：向邮箱发送重置验证码。
+   *  返回 { data: { updateUser({ nonce, password }) } }，提交新密码后会自动登录。 */
+  function resetPasswordForEmail(email) {
+    return cloud().auth.resetPasswordForEmail(email);
   }
 
   function signOut() {
@@ -354,6 +429,7 @@
         '</button>' +
         '<div class="auth-dropdown">' +
         '<div class="auth-dropdown__role">当前身份：' + (adminMode ? '管理员' : '普通用户') + '</div>' +
+        '<a href="' + ROOT + 'write.html">写文章</a>' +
         (adminMode
           ? '<a href="' + ROOT + 'admin.html">管理后台</a>' +
             '<a href="' + ROOT + 'account.html">个人中心</a>' +
@@ -432,6 +508,12 @@
       return adminFlag === true;
     },
     isAdminMode: isAdminMode,
+    account: function () {
+      return accountInfo;
+    },
+    loadAccount: loadAccount,
+    isActive: isActive,
+    requireActive: requireActive,
     identity: function () {
       return identity;
     },
@@ -444,6 +526,7 @@
     signInWithPassword: signInWithPassword,
     sendOtp: sendOtp,
     verifyOtp: verifyOtp,
+    resetPasswordForEmail: resetPasswordForEmail,
     signOut: signOut,
     requireLogin: requireLogin,
     onSessionChange: onSessionChange,

@@ -709,7 +709,51 @@ def login_page(*, config: dict, root: str = "") -> str:
         </form>
 
         <p class="auth-foot">
-          登录即表示你同意本站以最小必要范围保存账号信息。忘记密码可改用「邮箱验证码」登录。
+          登录即表示你同意本站以最小必要范围保存账号信息。
+          <button class="link-btn" type="button" data-auth-forgot>忘记密码？</button>
+        </p>
+      </div>
+
+      <div data-reset-wrap hidden>
+        <h1 class="auth-card__title">重置密码</h1>
+        <p class="auth-card__lead">填写注册邮箱获取验证码，验证通过后直接设置新密码并登录。</p>
+
+        <form class="auth-form" data-reset-form novalidate>
+          <label class="field">
+            <span class="field__label">邮箱</span>
+            <input class="field__input" type="email" name="resetEmail" placeholder="you@example.com"
+                   autocomplete="email" spellcheck="false" required>
+          </label>
+
+          <label class="field">
+            <span class="field__label">验证码</span>
+            <div class="field__row">
+              <input class="field__input" type="text" name="resetCode" inputmode="numeric"
+                     placeholder="邮件里的验证码" autocomplete="one-time-code">
+              <button class="btn btn--ghost btn--sm" type="button" data-reset-send>获取验证码</button>
+            </div>
+          </label>
+
+          <label class="field">
+            <span class="field__label">新密码</span>
+            <input class="field__input" type="password" name="resetPassword" placeholder="至少 6 位"
+                   autocomplete="new-password">
+          </label>
+
+          <label class="field">
+            <span class="field__label">确认新密码</span>
+            <input class="field__input" type="password" name="resetPassword2" placeholder="再输入一次"
+                   autocomplete="new-password">
+          </label>
+
+          <div class="auth-error" data-reset-error hidden></div>
+          <div class="auth-notice" data-reset-notice hidden></div>
+
+          <button class="btn btn--primary btn--block" type="submit" data-reset-submit>重置密码并登录</button>
+        </form>
+
+        <p class="auth-foot">
+          <button class="link-btn" type="button" data-reset-back>← 返回登录</button>
         </p>
       </div>
 
@@ -817,6 +861,18 @@ def account_page(*, config: dict, root: str = "") -> str:
 
       <section class="panel">
         <div class="panel__head">
+          <h2 class="panel__title">我的投稿</h2>
+          <span class="panel__hint">
+            共 <span data-my-post-count>0</span> 篇 · <a href="{root}write.html">写新文章</a>
+          </span>
+        </div>
+        <ul class="stack" data-my-posts>
+          <li class="stack-empty">加载中…</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <div class="panel__head">
           <h2 class="panel__title">我的评论</h2>
         </div>
         <ul class="stack" data-my-comments>
@@ -833,6 +889,86 @@ def account_page(*, config: dict, root: str = "") -> str:
         </ul>
       </section>
     </div>
+  </div>
+</div>"""
+
+
+# ---------- 用户投稿 ----------
+
+def write_page(*, config: dict, root: str = "") -> str:
+    return f"""<div class="wrap" data-write>
+  <div class="page-head">
+    <span class="eyebrow">Write</span>
+    <h1 class="article-head__title" style="margin-top:14px">写篇文章</h1>
+    <p class="article-head__summary" style="margin-top:18px">
+      用 Markdown 分享你的技术沉淀。保存草稿只有你自己可见；提交审核后由站长确认，通过即全站可见。
+    </p>
+  </div>
+
+  <div class="write-note" data-write-note hidden></div>
+
+  <div class="admin-split write-split">
+    <div class="panel panel--editor">
+      <div class="panel__head">
+        <h2 class="panel__title" data-editor-title>新建投稿</h2>
+        <span class="panel__hint">Markdown 语法，支持代码块与提示块</span>
+      </div>
+      <form class="form-grid" data-post-form onsubmit="return false">
+        <label class="field field--full">
+          <span class="field__label">标题</span>
+          <input class="field__input" type="text" name="title" placeholder="文章标题" maxlength="120">
+        </label>
+        <label class="field">
+          <span class="field__label">Slug（留空自动生成）</span>
+          <input class="field__input mono" type="text" name="slug" placeholder="my-first-post">
+        </label>
+        <label class="field">
+          <span class="field__label">标签（逗号分隔）</span>
+          <input class="field__input" type="text" name="tags" placeholder="Python, 性能优化">
+        </label>
+        <label class="field field--full">
+          <span class="field__label">摘要</span>
+          <input class="field__input" type="text" name="summary" placeholder="一句话说明这篇文章讲了什么" maxlength="200">
+        </label>
+        <label class="field field--full">
+          <span class="field__label">正文（Markdown）</span>
+          <textarea class="field__input field__textarea mono" rows="18" name="content_md"
+                    placeholder="## 标题&#10;&#10;正文…"></textarea>
+        </label>
+        <div class="form-grid__foot form-grid__foot--wide">
+          <button class="btn btn--ghost btn--sm" type="button" data-post-save>保存草稿</button>
+          <button class="btn btn--primary btn--sm" type="button" data-post-submit>提交审核</button>
+          <button class="btn btn--ghost btn--sm" type="button" data-post-preview>预览渲染</button>
+          <button class="btn btn--ghost btn--sm" type="button" data-post-image>插图</button>
+          <button class="btn btn--ghost btn--sm" type="button" data-post-reset>清空表单</button>
+        </div>
+      </form>
+      <div class="editor-preview" data-post-preview-box hidden></div>
+    </div>
+
+    <aside class="write-side">
+      <div class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">我的投稿</h2>
+          <span class="panel__hint">共 <span data-my-post-count>0</span> 篇</span>
+        </div>
+        <ul class="stack" data-my-posts>
+          <li class="stack-empty">加载中…</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">投稿须知</h2>
+        </div>
+        <ul class="write-rules">
+          <li>提交后进入<strong>待审核</strong>，站长通过之前不会出现在前台。</li>
+          <li>未通过的稿件会附上理由，改完可以再次提交。</li>
+          <li>已发布的文章不能自行编辑，需要修改请联系站长先下架。</li>
+          <li>请勿提交违规、侵权或与本站主题无关的内容。</li>
+        </ul>
+      </div>
+    </aside>
   </div>
 </div>"""
 
@@ -855,6 +991,7 @@ def admin_page(*, config: dict, root: str = "") -> str:
 
   <div class="admin-stats">
     <div class="admin-stat"><div class="admin-stat__value" data-stat-users>0</div><div class="admin-stat__label">注册用户</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-disabled>0</div><div class="admin-stat__label">已禁用账号</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-comments>0</div><div class="admin-stat__label">评论总数</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-today>0</div><div class="admin-stat__label">24h 新评论</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-views>0</div><div class="admin-stat__label">总阅读量</div></div>
@@ -862,10 +999,12 @@ def admin_page(*, config: dict, root: str = "") -> str:
     <div class="admin-stat"><div class="admin-stat__value" data-stat-likes>0</div><div class="admin-stat__label">点赞总数</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-posts>0</div><div class="admin-stat__label">在线文章</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-drafts>0</div><div class="admin-stat__label">草稿</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-pending>0</div><div class="admin-stat__label">待审核投稿</div></div>
   </div>
 
   <div class="admin-tabs" role="tablist" aria-label="后台分区">
     <button class="admin-tab is-active" type="button" role="tab" aria-selected="true" data-admin-tab="posts">文章管理</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="review">内容审核 <span class="admin-tab__badge" data-review-badge hidden>0</span></button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="comments">评论管理</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="users">用户</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="admins">管理员</button>
@@ -920,17 +1059,49 @@ def admin_page(*, config: dict, root: str = "") -> str:
 
       <div class="panel">
         <div class="panel__head">
-          <h2 class="panel__title">已发布的在线文章</h2>
-          <span class="panel__hint">共 <span data-post-count>0</span> 篇</span>
+          <h2 class="panel__title">全部在线文章</h2>
+          <span class="panel__hint">含管理员发布与用户投稿，共 <span data-post-count>0</span> 篇</span>
         </div>
         <div class="admin-table-wrap">
           <table class="admin-table">
-            <thead><tr><th>标题</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
+            <thead><tr><th>标题</th><th>作者</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
             <tbody data-admin-posts>
-              <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
+              <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="admin-panel" data-admin-panel="review" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">待审核投稿</h2>
+        <span class="panel__hint">普通用户提交的稿件，通过后才会出现在前台（当前 <span data-review-count>0</span> 篇待处理）</span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>标题</th><th>作者</th><th>提交时间</th><th>篇幅</th><th>操作</th></tr></thead>
+          <tbody data-admin-review>
+            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">已处理投稿</h2>
+        <span class="panel__hint">最近审核过的稿件，可随时下架或重新通过</span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>标题</th><th>作者</th><th>结果</th><th>审核时间</th><th>操作</th></tr></thead>
+          <tbody data-admin-reviewed>
+            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -960,14 +1131,16 @@ def admin_page(*, config: dict, root: str = "") -> str:
   <section class="admin-panel" data-admin-panel="users" hidden>
     <div class="panel">
       <div class="panel__head">
-        <h2 class="panel__title">注册用户</h2>
-        <span class="panel__hint">只展示已填写资料的账号</span>
+        <h2 class="panel__title">用户管理</h2>
+        <span class="panel__hint">密码由云平台加密托管（bcrypt），管理员无法查看或篡改；用户可在登录页「忘记密码」自助重置</span>
       </div>
       <div class="admin-table-wrap">
         <table class="admin-table">
-          <thead><tr><th>昵称 / ID</th><th>简介</th><th>互动</th><th>注册时间</th></tr></thead>
+          <thead>
+            <tr><th>昵称 / ID</th><th>邮箱</th><th>状态</th><th>角色</th><th>互动</th><th>注册时间</th><th>操作</th></tr>
+          </thead>
           <tbody data-admin-users>
-            <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
+            <tr><td colspan="7" class="admin-empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1006,8 +1179,11 @@ def cloud_posts_page(*, config: dict, root: str = "") -> str:
     <span class="eyebrow">Online</span>
     <h1 class="article-head__title" style="margin-top:14px">在线文章</h1>
     <p class="article-head__summary" style="margin-top:18px">
-      由管理员在后台直接发布的内容，共 <span data-cloud-count>0</span> 篇。它们与静态文章一样支持点赞、收藏与评论。
+      站长与投稿用户发布的内容，共 <span data-cloud-count>0</span> 篇。它们与静态文章一样支持点赞、收藏与评论。
     </p>
+    <div class="hero__actions" style="margin-top:24px">
+      <a class="btn btn--ghost btn--sm" href="{root}write.html">我也要投稿</a>
+    </div>
   </div>
   <section class="section" style="margin-top:44px">
     <div class="loading-state" data-cloud-status>正在加载文章…</div>

@@ -181,6 +181,165 @@
     });
   }
 
+  /* ---------------- 忘记密码（自助重置） ---------------- */
+
+  var resetWrap = q('[data-reset-wrap]');
+  var resetForm = q('[data-reset-form]');
+  var resetEmailInput = q('[name="resetEmail"]');
+  var resetCodeInput = q('[name="resetCode"]');
+  var resetPasswordInput = q('[name="resetPassword"]');
+  var resetPassword2Input = q('[name="resetPassword2"]');
+  var resetSendBtn = q('[data-reset-send]');
+  var resetSubmitBtn = q('[data-reset-submit]');
+  var resetErrorBox = q('[data-reset-error]');
+  var resetNoticeBox = q('[data-reset-notice]');
+
+  var resetHandle = null; /* resetPasswordForEmail 返回的 { updateUser } */
+  var resetSendTimer = null;
+  var resetLeft = 0;
+
+  function showResetError(message) {
+    if (!resetErrorBox) return;
+    resetErrorBox.textContent = message || '';
+    if (message) resetErrorBox.removeAttribute('hidden');
+    else resetErrorBox.setAttribute('hidden', '');
+  }
+
+  function showResetNotice(message) {
+    if (!resetNoticeBox) return;
+    resetNoticeBox.textContent = message || '';
+    if (message) resetNoticeBox.removeAttribute('hidden');
+    else resetNoticeBox.setAttribute('hidden', '');
+  }
+
+  /** 在「登录表单 / 身份选择 / 已登录 / 重置密码」之间切换。 */
+  function showReset(on) {
+    if (!resetWrap) return;
+    if (on) {
+      resetWrap.removeAttribute('hidden');
+      [formWrap, pickWrap, signedInWrap].forEach(function (el) {
+        if (el) el.setAttribute('hidden', '');
+      });
+      if (resetEmailInput) {
+        if (!resetEmailInput.value) resetEmailInput.value = (emailInput && emailInput.value || '').trim();
+        if (resetEmailInput.value && resetCodeInput) resetCodeInput.focus();
+        else resetEmailInput.focus();
+      }
+      return;
+    }
+    resetWrap.setAttribute('hidden', '');
+    if (C.currentUser()) {
+      if (signedInWrap) signedInWrap.removeAttribute('hidden');
+    } else if (formWrap) {
+      formWrap.removeAttribute('hidden');
+    }
+  }
+
+  function onSendResetCode() {
+    var email = (resetEmailInput && resetEmailInput.value || '').trim();
+    if (!email || email.indexOf('@') < 1) {
+      showResetError('请填写注册时用的邮箱');
+      if (resetEmailInput) resetEmailInput.focus();
+      return;
+    }
+    if (resetSendTimer) return;
+
+    showResetError('');
+    showResetNotice('');
+    resetSendBtn.disabled = true;
+    resetSendBtn.textContent = '发送中…';
+
+    C.resetPasswordForEmail(email)
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var handle = res && res.data;
+        if (!handle || typeof handle.updateUser !== 'function') {
+          throw new Error('云端没有返回重置凭证，请稍后重试');
+        }
+        resetHandle = handle;
+        showResetNotice('验证码已发送到 ' + email + '，10 分钟内有效。');
+        if (resetCodeInput) resetCodeInput.focus();
+
+        resetLeft = 60;
+        resetSendBtn.textContent = resetLeft + 's 后重发';
+        resetSendTimer = setInterval(function () {
+          resetLeft -= 1;
+          if (resetLeft <= 0) {
+            clearInterval(resetSendTimer);
+            resetSendTimer = null;
+            resetSendBtn.disabled = false;
+            resetSendBtn.textContent = '重新发送';
+            return;
+          }
+          resetSendBtn.textContent = resetLeft + 's 后重发';
+        }, 1000);
+      })
+      .catch(function (err) {
+        resetSendBtn.disabled = false;
+        resetSendBtn.textContent = '获取验证码';
+        showResetError(friendly(err, '验证码发送失败，请稍后重试'));
+      });
+  }
+
+  function onResetSubmit(event) {
+    if (event) event.preventDefault();
+    var code = (resetCodeInput && resetCodeInput.value || '').trim();
+    var password = (resetPasswordInput && resetPasswordInput.value) || '';
+    var confirm = (resetPassword2Input && resetPassword2Input.value) || '';
+
+    if (!resetHandle) {
+      showResetError('请先获取邮箱验证码');
+      return;
+    }
+    if (!code) {
+      showResetError('请填写邮件里收到的验证码');
+      if (resetCodeInput) resetCodeInput.focus();
+      return;
+    }
+    if (password.length < 6) {
+      showResetError('新密码至少 6 位');
+      if (resetPasswordInput) resetPasswordInput.focus();
+      return;
+    }
+    if (password !== confirm) {
+      showResetError('两次输入的新密码不一致');
+      if (resetPassword2Input) resetPassword2Input.focus();
+      return;
+    }
+
+    showResetError('');
+    resetSubmitBtn.disabled = true;
+    resetSubmitBtn.textContent = '提交中…';
+
+    resetHandle.updateUser({ nonce: code, password: password })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        resetHandle = null;
+        showResetNotice('密码已重置，正在登录…');
+        return afterLogin();
+      })
+      .catch(function (err) {
+        resetSubmitBtn.disabled = false;
+        resetSubmitBtn.textContent = '重置密码并登录';
+        showResetError(friendly(err, '重置失败，请检查验证码是否正确'));
+      });
+  }
+
+  var forgotBtn = q('[data-auth-forgot]');
+  if (forgotBtn) {
+    forgotBtn.addEventListener('click', function () {
+      showReset(true);
+    });
+  }
+  var resetBackBtn = q('[data-reset-back]');
+  if (resetBackBtn) {
+    resetBackBtn.addEventListener('click', function () {
+      showReset(false);
+    });
+  }
+  if (resetSendBtn) resetSendBtn.addEventListener('click', onSendResetCode);
+  if (resetForm) resetForm.addEventListener('submit', onResetSubmit);
+
   function onSubmit(event) {
     if (event) event.preventDefault();
     if (busy) return;

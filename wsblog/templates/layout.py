@@ -12,7 +12,7 @@ from urllib.parse import quote
 from ..cloudconf import vendor_url
 from ..util import escape_html as esc
 
-__all__ = ["layout", "render_social", "icons"]
+__all__ = ["layout", "render_social", "render_appearance", "icons"]
 
 # ---------- 内联图标（不依赖图标库，无额外请求） ----------
 icons = {
@@ -70,7 +70,72 @@ icons = {
         '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true">'
         '<path d="M12 2.5 13.9 9 20 11l-6.1 2L12 19.5 10.1 13 4 11l6.1-2Z"/></svg>'
     ),
+    "palette": (
+        '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.2 0-.8.7-1.5 '
+        '1.5-1.5H16a5 5 0 0 0 5-5c0-3.9-4-7-9-7Z"/>'
+        '<circle cx="7.6" cy="12.2" r="1.15" fill="currentColor" stroke="none"/>'
+        '<circle cx="10.8" cy="8" r="1.15" fill="currentColor" stroke="none"/>'
+        '<circle cx="15.4" cy="9.1" r="1.15" fill="currentColor" stroke="none"/></svg>'
+    ),
 }
+
+# 首屏防闪烁：必须在样式表之前定稿 data-theme，否则会先闪一下深色再变浅色。
+# 存储为空时默认跟随系统（mode=auto）。
+THEME_BOOT = (
+    "<script>(function(){var d=document.documentElement;var m='auto',a='';"
+    "try{var s=JSON.parse(localStorage.getItem('wsblog:appearance')||'{}')||{};"
+    "if(s.mode==='light'||s.mode==='dark'||s.mode==='auto'){m=s.mode;}"
+    "if(typeof s.accent==='string'){a=s.accent;}}catch(e){}"
+    "var dark=m==='dark'||(m==='auto'&&!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)')"
+    ".matches));d.setAttribute('data-theme',dark?'dark':'light');"
+    "if(a&&a!=='teal'){d.setAttribute('data-accent',a);}})();</script>"
+)
+
+# 外观选择器：主题模式 + 强调色，二者都存进 localStorage
+APPEARANCE_SWATCHES = (
+    ("teal", "#2dd4bf", "青绿"),
+    ("blue", "#60a5fa", "天蓝"),
+    ("violet", "#a78bfa", "紫罗兰"),
+    ("amber", "#fbbf24", "琥珀"),
+    ("rose", "#fb7185", "玫红"),
+)
+
+
+def render_appearance() -> str:
+    """顶栏的外观设置按钮 + 弹出面板。"""
+    checks = "".join(
+        f'<button class="swatch" type="button" role="radio" '
+        f'aria-checked="{"true" if key == "teal" else "false"}" '
+        f'data-appearance-accent="{key}" aria-label="{esc(label)}" title="{esc(label)}" '
+        f'style="--sw:{color}"></button>'
+        for key, color, label in APPEARANCE_SWATCHES
+    )
+    return (
+        '<div class="appearance" data-appearance>'
+        '<button class="appearance-trigger" type="button" data-appearance-open aria-expanded="false" '
+        f'aria-label="外观设置" title="外观设置">{icons["palette"]}</button>'
+        '<div class="appearance-panel" data-appearance-panel hidden role="group" aria-label="外观设置">'
+        '<div class="appearance-group">'
+        '<span class="appearance-label">主题</span>'
+        '<div class="seg" role="radiogroup" aria-label="主题模式">'
+        '<button class="seg__btn" type="button" role="radio" aria-checked="true" '
+        'data-appearance-mode="auto">跟随系统</button>'
+        '<button class="seg__btn" type="button" role="radio" aria-checked="false" '
+        'data-appearance-mode="light">浅色</button>'
+        '<button class="seg__btn" type="button" role="radio" aria-checked="false" '
+        'data-appearance-mode="dark">深色</button>'
+        "</div>"
+        "</div>"
+        '<div class="appearance-group">'
+        '<span class="appearance-label">强调色</span>'
+        f'<div class="swatches" role="radiogroup" aria-label="强调色">{checks}</div>'
+        "</div>"
+        '<p class="appearance-hint">设置仅保存在本机浏览器，不影响其他访客。</p>'
+        "</div>"
+        "</div>"
+    )
 
 
 def _is_http(url) -> bool:
@@ -175,6 +240,8 @@ def layout(
     body_attr = f' class="{esc(body_class)}"' if body_class else ""
     progress_html = '<div class="read-progress" id="readProgress"></div>' if show_progress else ""
     brand_initial = esc(str(site_title).strip()[:1].upper())
+    theme_boot = THEME_BOOT
+    appearance_html = render_appearance()
 
     # ---------- 顶栏登录态 ----------
     # 先渲染一个静态兜底链接：即使云端 SDK 拉取失败，访客也总能找到登录入口。
@@ -198,6 +265,8 @@ def layout(
         return f"{root}assets/{esc(url.lstrip('/'))}"
 
     script_tags = []
+    # 外观设置要尽早绑定（含首屏状态同步），放在第一个
+    script_tags.append(f'<script src="{root}assets/theme.js" defer></script>')
     if cloud:
         script_tags.append(f'<script src="{root}assets/cloud-config.js" defer></script>')
         for name in vendor or []:
@@ -222,9 +291,10 @@ def layout(
 <meta name="description" content="{esc(desc)}">
 <meta name="author" content="{esc(config.get("author") or "")}">
 {keywords_meta}
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0a0c11">
 <meta name="generator" content="WS Blog (static generator)">
+{theme_boot}
 {canonical_meta}
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="{esc(site_title)}">
@@ -259,6 +329,7 @@ def layout(
       <button class="search-trigger" type="button" data-search-open aria-label="搜索站内内容">
         {icons["search"]}<span>搜索</span><kbd>Ctrl K</kbd>
       </button>
+      {appearance_html}
       {auth_slot}
       {social_html}
       <button class="nav-toggle" type="button" data-nav-toggle aria-label="展开菜单" aria-expanded="false">{icons["menu"]}</button>
