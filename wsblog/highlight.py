@@ -24,7 +24,7 @@ from .util import escape_html
 
 __all__ = ["highlight_code", "LANG_LABELS"]
 
-# 代码块右上角的语言展示名（与 Node 版保持一致）
+# 代码块右上角的语言展示名（沿用 highlight.js 的习惯写法）
 LANG_LABELS = {
     "js": "JavaScript",
     "javascript": "JavaScript",

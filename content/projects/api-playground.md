@@ -7,8 +7,8 @@ tags: [工具, 前端]
 status: 维护中
 featured: false
 order: 3
-repo: https://github.com/your-github/api-playground
-demo: https://example.com/api-playground
+repo: ""
+demo: ""
 ---
 
 ## 为什么又造一个 Postman

@@ -7,7 +7,7 @@ tags: [工具, 图像处理]
 status: 活跃
 featured: true
 order: 2
-repo: https://github.com/your-github/picsqueeze
+repo: ""
 demo: ""
 ---
 

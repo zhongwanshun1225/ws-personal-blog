@@ -1,5 +1,5 @@
 {
-  "_readme": "这是站点的主配置文件。下面所有带 ⚠️ 的字段都是占位内容，请改成你自己的信息。改完运行 python build.py 即可生效。",
+  "_readme": "这是站点的主配置文件。作者、社交链接、页脚备案号等个人信息都在这里改，改完运行 python build.py 即可生效。",
   "title": "WS Blog",
   "author": "WS",
   "jobTitle": "全栈开发 / 技术爱好者",
@@ -81,7 +81,7 @@
     },
     {
       "label": "邮箱",
-      "url": "mailto:your@email.com",
+      "url": "mailto:1572662085@qq.com",
       "icon": "mail"
     },
     {

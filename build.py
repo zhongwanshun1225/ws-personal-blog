@@ -951,7 +951,7 @@ stack: [TypeScript, React]
 status: 活跃
 featured: false
 order: 100
-repo: https://github.com/your-github/{slug}
+repo: ""
 demo: ""
 draft: true
 ---
