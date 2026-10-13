@@ -100,6 +100,7 @@ docs: ""                       # 文档链接（可选）
 - `about.skills` / `about.timeline` —— 技能栈与经历
 - `footer.note` / `footer.icp` —— 页脚说明 / 备案号
 - `url` —— 部署后的正式域名（影响 RSS 和 sitemap）
+- `mirror` —— 镜像域名自动跳转到 `url`（`hostSuffix` + `basePath`），留空即关闭
 
 「关于我」页面的正文在 `content/pages/about.md`。
 
@@ -215,7 +216,12 @@ docs: ""                       # 文档链接（可选）
 
 `dist/` 是纯静态目录，任何静态托管都能用：
 
-**GitHub Pages**
+**GitHub Pages（镜像站）**
+
+> 云端按 Origin 精确放行（一个应用只认一个域名），所以 GitHub Pages 上登录 / 评论 / 后台都调不通。
+> 页面 `<head>` 里有一段内联脚本：检测到镜像域名就跳到 `site.config.json` 的 `url`（保留路径与查询串），
+> 由 `mirror` 配置驱动 —— `hostSuffix` 命中即跳，`basePath` 是镜像站点的路径前缀（GitHub Pages 项目站形如 `/<仓库名>/`）；
+> 留空 `hostSuffix` 关闭跳转，带 `?mirror=off` 访问可停留原处。
 
 1. 把仓库推到 GitHub；
 2. 仓库 Settings → Pages → Source 选 **GitHub Actions**；

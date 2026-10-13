@@ -12,7 +12,7 @@ from urllib.parse import quote
 from ..cloudconf import vendor_url
 from ..util import escape_html as esc
 
-__all__ = ["layout", "render_social", "render_appearance", "icons"]
+__all__ = ["layout", "render_social", "render_appearance", "render_mirror_redirect", "icons"]
 
 # ---------- 内联图标（不依赖图标库，无额外请求） ----------
 icons = {
@@ -92,6 +92,47 @@ THEME_BOOT = (
     ".matches));d.setAttribute('data-theme',dark?'dark':'light');"
     "if(a&&a!=='teal'){d.setAttribute('data-accent',a);}})();</script>"
 )
+
+
+def render_mirror_redirect(config: dict) -> str:
+    """镜像域名自动跳到正式域名（放在 <head> 最前面，越早执行闪动越小）。
+
+    云端按 Origin 精确放行，一个应用只认一个域名，所以 GitHub Pages 那份
+    连不上云端（登录 / 互动 / 后台全部 403）。这里让镜像域名的访问者直接
+    落到正式域名，功能就是完整的。
+
+    site.config.json 配置（hostSuffix 为空即关闭）：
+
+        "mirror": { "hostSuffix": "github.io", "basePath": "/ws-personal-blog" }
+
+    hostSuffix —— 命中该后缀的主机名会被重定向
+    basePath   —— 镜像域名下站点根的路径前缀，会被剥掉再拼到 config.url 上
+                  （GitHub Pages 项目站的地址形如 /<仓库名>/）
+
+    带 ``?mirror=off`` 访问可停留原处（方便对比两种部署的差异）。
+    """
+    mirror = config.get("mirror") or {}
+    host_suffix = str(mirror.get("hostSuffix") or "").strip().lower().lstrip(".")
+    target = str(config.get("url") or "").rstrip("/")
+    if not host_suffix or not target:
+        return ""
+
+    base_path = "/" + str(mirror.get("basePath") or "").strip("/")
+    if base_path == "/":
+        base_path = ""
+
+    return (
+        "<script>(function(){"
+        "if(/[?&]mirror=off(?:&|$)/.test(location.search))return;"
+        f"var s={json.dumps(host_suffix)},h=location.hostname.toLowerCase();"
+        "if(h!==s&&h.slice(-(s.length+1))!=='.'+s)return;"
+        f"var b={json.dumps(base_path)},p=location.pathname;"
+        "if(b&&p.indexOf(b)===0){p=p.slice(b.length);}"
+        "if(!p||p.charAt(0)!=='/'){p='/'+p;}"
+        f"location.replace({json.dumps(target)}+p+location.search+location.hash);"
+        "})();</script>"
+    )
+
 
 # 外观选择器：主题模式 + 强调色，二者都存进 localStorage
 APPEARANCE_SWATCHES = (
@@ -241,6 +282,7 @@ def layout(
     progress_html = '<div class="read-progress" id="readProgress"></div>' if show_progress else ""
     brand_initial = esc(str(site_title).strip()[:1].upper())
     theme_boot = THEME_BOOT
+    mirror_script = render_mirror_redirect(config)
     appearance_html = render_appearance()
 
     # ---------- 顶栏登录态 ----------
@@ -287,6 +329,7 @@ def layout(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+{mirror_script}
 <title>{esc(page_title)}</title>
 <meta name="description" content="{esc(desc)}">
 <meta name="author" content="{esc(config.get("author") or "")}">
