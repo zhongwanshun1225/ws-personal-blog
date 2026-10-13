@@ -386,6 +386,10 @@
     slugs_sync: '同步文章清单'
   };
 
+  /* 审计日志原来写死 100 条（V3）：管理员看不到更早的记录，也没有任何提示。
+     这里改成可扩展，并把「还有更多」明确给出来。 */
+  var auditLimit = 100;
+
   function loadAudit() {
     var body = q('[data-audit-log]');
     if (!body) return Promise.resolve(null);
@@ -393,10 +397,16 @@
       .from('admin_audit_log')
       .select('id, actor_email, action, target_type, target_id, note, payload, created_at')
       .order('created_at', { ascending: false })
-      .limit(100)
+      .limit(auditLimit)
       .then(function (res) {
         if (res && res.error) throw res.error;
         var rows = (res && res.data) || [];
+        var tail =
+          rows.length >= auditLimit
+            ? '<tr><td colspan="5" class="admin-empty">' +
+              '<button class="link-btn" type="button" data-audit-more>加载更多</button>' +
+              '<span class="admin-cell__sub"> 已显示最近 ' + rows.length + ' 条</span></td></tr>'
+            : '';
         body.innerHTML = rows.length
           ? rows.map(function (item) {
               var detail = '';
@@ -419,8 +429,20 @@
                 '<td class="admin-cell__sub">' + (detail || '—') + '</td>' +
                 '</tr>'
               );
-            }).join('')
+            }).join('') + tail
           : '<tr><td colspan="5" class="admin-empty">还没有任何管理操作记录。</td></tr>';
+        /* 事件委托绑一次即可（每次重渲染 innerHTML 都会丢掉子节点上的监听） */
+        if (!body.getAttribute('data-audit-bound')) {
+          body.setAttribute('data-audit-bound', '1');
+          body.addEventListener('click', function (e) {
+            var btn = e.target.closest ? e.target.closest('[data-audit-more]') : null;
+            if (!btn) return;
+            e.preventDefault();
+            btn.disabled = true;
+            auditLimit += 100;
+            loadAudit();
+          });
+        }
         return rows;
       })
       .catch(function (err) {

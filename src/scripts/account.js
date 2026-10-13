@@ -35,6 +35,67 @@
   var bookmarksEl = q('[data-my-bookmarks]');
   var identitySwitch = q('[data-account-identity]');
 
+  /* ---------------- 列表分页（V3） ----------------
+   * 「我的投稿 / 我的评论 / 我的收藏」原来各自写死一个 limit（30 / 100 / 100），
+   * 超出的部分**静默消失** —— 用户看到的就是「我明明有更多评论」。
+   * 现在改成：按需扩展 limit（offset 语义），并且在被截断时把「已显示最近 N 条」
+   * 和「加载更多」明说给用户。数据量不大（个人维度），不需要真正游标分页。
+   */
+  var listState = {
+    posts: { limit: 30, step: 30 },
+    comments: { limit: 100, step: 100 },
+    bookmarks: { limit: 100, step: 100 },
+  };
+
+  /* 文案（V13）：字典在 assets/i18n.js */
+  function t(key, fallback) {
+    if (typeof window.__wsT === 'function') {
+      var str = window.__wsT(key, fallback);
+      if (str) return str;
+    }
+    return fallback || key;
+  }
+
+  function moreRow(kind) {
+    return (
+      '<li class="stack-more">' +
+      '<button class="link-btn" type="button" data-list-more="' + kind + '">' +
+      C.escapeHtml(t('account.loadMore', '加载更多')) +
+      '</button></li>'
+    );
+  }
+
+  function truncationNote(kind, shown) {
+    return (
+      '<li class="stack-note">' +
+      C.escapeHtml(t('account.showingRecent', '已显示最近 {n} 条').split('{n}').join(String(shown))) +
+      '</li>'
+    );
+  }
+
+  /* 返回 true 表示「可能还有更多」：拉满一页就认为被截断了 */
+  function maybeMore(kind, shown) {
+    return shown >= listState[kind].limit;
+  }
+
+  function bindMoreButtons() {
+    [myPostsEl, commentsEl, bookmarksEl].forEach(function (el) {
+      if (!el) return;
+      el.addEventListener('click', function (e) {
+        var btn = e.target.closest ? e.target.closest('[data-list-more]') : null;
+        if (!btn) return;
+        e.preventDefault();
+        var kind = btn.getAttribute('data-list-more');
+        if (!listState[kind]) return;
+        listState[kind].limit += listState[kind].step;
+        btn.disabled = true;
+        if (kind === 'posts') loadMyPosts();
+        else if (kind === 'comments') loadComments();
+        else if (kind === 'bookmarks') loadBookmarks();
+      });
+    });
+  }
+
   var profile = null;
 
   function toast(message) {
@@ -285,13 +346,14 @@
               ' edit_submitted_at, edit_review_note')
       .eq('author_id', uid)
       .order('updated_at', { ascending: false })
-      .limit(30)
+      .limit(listState.posts.limit)
       .then(function (res) {
         if (res && res.error) throw res.error;
         var list = (res && res.data) || [];
         if (myPostCountEl) myPostCountEl.textContent = String(list.length);
         myPostsEl.innerHTML = list.length
-          ? list.map(myPostsRow).join('')
+          ? list.map(myPostsRow).join('') +
+            (maybeMore('posts', list.length) ? truncationNote('posts', list.length) + moreRow('posts') : '')
           : '<li class="stack-empty">还没有投稿，<a href="write.html">写第一篇</a>。</li>';
         return list;
       })
@@ -313,7 +375,7 @@
       .select('id, post_slug, content, status, created_at')
       .eq('owner_id', uid)
       .order('created_at', { ascending: false })
-      .limit(100)
+      .limit(listState.comments.limit)
       .then(function (res) {
         if (res && res.error) throw res.error;
         var rows = (res && res.data) || [];
@@ -338,7 +400,8 @@
               '</li>'
             );
           })
-          .join('');
+          .join('') +
+          (maybeMore('comments', rows.length) ? truncationNote('comments', rows.length) + moreRow('comments') : '');
         bindCommentDeletes();
       })
       .catch(function (err) {
@@ -381,7 +444,7 @@
       .from('post_bookmarks')
       .select('id, post_slug, title, created_at')
       .order('created_at', { ascending: false })
-      .limit(100)
+      .limit(listState.bookmarks.limit)
       .then(function (res) {
         if (res && res.error) throw res.error;
         var rows = (res && res.data) || [];
@@ -402,7 +465,8 @@
               '</li>'
             );
           })
-          .join('');
+          .join('') +
+          (maybeMore('bookmarks', rows.length) ? truncationNote('bookmarks', rows.length) + moreRow('bookmarks') : '');
         bindBookmarkDeletes();
       })
       .catch(function (err) {
@@ -539,5 +603,6 @@
     loadComments();
     loadBookmarks();
     loadMyPosts();
+    bindMoreButtons();
   });
 })();

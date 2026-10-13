@@ -110,12 +110,15 @@ def _normalize_row(row: dict, static_slugs: set[str] | None = None) -> dict | No
         "date": date,
         "updated": updated,
         "tags": tags,
+        "series": str(row.get("series") or "").strip(),
         "summary": summary or (plain[:110] + ("…" if len(plain) > 110 else "")),
         "cover": "",
         "plain": plain,
         "content_md": content_md,
         "html": rendered["html"],
         "toc": rendered["toc"],
+        "has_math": rendered.get("has_math", False),
+        "has_mermaid": rendered.get("has_mermaid", False),
         # 下面几个字段是「与静态文章同形」的补齐项：模板里的
         # _post_item / post_page 会直接取 post["reading_time"] 与 post["words"]，
         # 缺了就是构建期 KeyError —— 之前云端 0 篇时这条路没被走到，别删。

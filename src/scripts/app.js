@@ -33,6 +33,20 @@
   /* 云端脚本复用同一个提示条，避免两套实现互相打断 */
   window.__wsToast = toast;
 
+  /* ================= 文案（V13） =================
+   * 界面文案的字典与切换逻辑都在 assets/i18n.js（由 wsblog/i18n.py 生成），
+   * 这里只做一个薄封装：拿不到就退回中文原文，绝不让 JS 报错影响功能。
+   */
+  function t(key, fallback) {
+    var i18n = window.WSBlogI18n;
+    if (i18n && typeof i18n.t === 'function') {
+      var text = i18n.t(key);
+      if (text && text !== key) return text;
+    }
+    return fallback == null ? key : fallback;
+  }
+  window.__wsT = t;
+
   /* ================= 移动端菜单 ================= */
   (function () {
     var toggle = $('[data-nav-toggle]');
@@ -87,8 +101,8 @@
     }
 
     function copyText(text, block) {
-      function ok() { toast('链接已复制'); }
-      function fail() { toast('复制失败，请手动复制地址栏'); }
+      function ok() { toast(t('common.linkCopied', '链接已复制')); }
+      function fail() { toast(t('common.linkCopyFailed', '复制失败，请手动复制地址栏')); }
       function fallback() {
         try {
           var ta = doc.createElement('textarea');
@@ -176,6 +190,13 @@
     var activeIndex = -1;
     var currentResults = [];
 
+    /* 全文分片（V16）：元数据索引里只有标题 / 摘要 / 标签，正文按片按需拉。
+       bodyLoaded / bodyItems 记录已经拉到的分片，bodyLoading 防止重复并发。 */
+    var textShardCount = 0;
+    var bodyLoaded = 0;
+    var bodyLoading = false;
+    var bodyByUrl = {};
+
     function escapeHtml(str) {
       return String(str)
         .replace(/&/g, '&amp;')
@@ -197,6 +218,7 @@
           return r.json();
         })
         .then(function (data) {
+          textShardCount = parseInt(data.textShards, 10) || 0;
           items = (data.items || []).map(function (it) {
             return {
               kind: it.kind,
@@ -204,17 +226,15 @@
               url: it.url || '',
               summary: it.summary || '',
               tags: it.tags || [],
-              text: it.text || '',
               date: it.date || '',
-              // 预先拼好一个全量检索串，省去每次查询都拼接
+              text: '',
+              // 元数据层的检索串（不含正文 —— 正文要等分片到位再补）
               haystack: (
                 (it.title || '') +
                 ' ' +
                 (it.tags || []).join(' ') +
                 ' ' +
-                (it.summary || '') +
-                ' ' +
-                (it.text || '')
+                (it.summary || '')
               ).toLowerCase(),
               titleLower: (it.title || '').toLowerCase(),
               tagsLower: (it.tags || []).join(' ').toLowerCase()
@@ -228,6 +248,43 @@
           return items;
         });
       return indexPromise;
+    }
+
+    /* ---------- 全文分片（V16） ----------
+       逐片拉取，每拉到一片就把「正文命中」的结果补进当前列表。
+       两处提前收手，避免把整份正文白拉一遍：
+         · bodyActive 为假（没在搜索）—— 不拉；
+         · 结果已经够 RESULT_LIMIT 条 —— 先不拉，等用户改了关键词再看。
+       任何一片失败（404 / 断网 / SW 缓存了旧索引）直接收手，不影响已有结果。 */
+    var bodyActive = false;
+    var bodyProgress = null;
+
+    function pumpBodies() {
+      if (bodyLoading || !bodyActive) return;
+      if (bodyLoaded >= textShardCount) return;
+      if (currentResults.length >= RESULT_LIMIT) return;
+
+      bodyLoading = true;
+      fetch(ROOT + 'search-index/text-' + (bodyLoaded + 1) + '.json')
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (rows) {
+          (rows || []).forEach(function (row) {
+            if (row && row.url) bodyByUrl[row.url] = String(row.text || '').toLowerCase();
+          });
+          bodyLoaded += 1;
+        })
+        .catch(function () {
+          /* 分片缺失就当作「没有更多正文」，别无限重试 */
+          bodyLoaded = textShardCount;
+        })
+        .then(function () {
+          bodyLoading = false;
+          if (bodyProgress) bodyProgress();
+          pumpBodies();
+        });
     }
 
     function scoreItem(item, terms) {
@@ -245,11 +302,21 @@
     }
 
     function makeSnippet(item, terms) {
-      var source = item.summary || item.text || '';
+      /* 摘要优先；摘要是命中不了关键词（说明这条是正文命中）时用正文片段，
+         否则用户看到的高亮会是空的 —— 「命中但看不出为什么命中」最劝退。 */
+      var source = item.summary || '';
       var lower = source.toLowerCase();
-      var pos = -1;
+      var found = false;
       for (var i = 0; i < terms.length; i++) {
-        var p = lower.indexOf(terms[i]);
+        if (lower.indexOf(terms[i]) !== -1) { found = true; break; }
+      }
+      if (!found && bodyByUrl[item.url]) {
+        source = bodyByUrl[item.url];
+        lower = source;
+      }
+      var pos = -1;
+      for (var j = 0; j < terms.length; j++) {
+        var p = lower.indexOf(terms[j]);
         if (p !== -1 && (pos === -1 || p < pos)) pos = p;
       }
       if (pos === -1) {
@@ -274,53 +341,113 @@
       }
     }
 
-    function render(query) {
-      var q = query.trim().toLowerCase();
-      resultsBox.innerHTML = '';
-
-      if (!q) {
-        activeIndex = -1;
-        currentResults = [];
-        var hint = items.slice(0, 5);
-        if (!hint.length) {
-          resultsBox.innerHTML = '<div class="search-empty">输入关键词开始搜索</div>';
-          return;
-        }
-        resultsBox.innerHTML =
-          '<div style="padding:10px 14px 6px;font:500 .68rem/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint)">最近更新</div>' +
-          hint.map(function (it) { return resultHtml(it, []); }).join('');
-        wireResults();
-        return;
-      }
-
-      var terms = q.split(/\s+/).filter(Boolean);
+    /* 元数据层检索：标题 / 标签 / 摘要。命中即可立刻出结果，不等正文。 */
+    function collectMeta(terms, limit) {
       var scored = [];
       for (var i = 0; i < items.length; i++) {
         var s = scoreItem(items[i], terms);
         if (s > 0) scored.push({ item: items[i], score: s });
       }
       scored.sort(function (a, b) { return b.score - a.score; });
-      currentResults = scored.slice(0, 12).map(function (r) { return r.item; });
-      activeIndex = currentResults.length ? 0 : -1;
+      return scored.slice(0, limit).map(function (r) { return r.item; });
+    }
 
+    /* 正文层检索：只在已经拉到的那几片里找，且跳过元数据已经命中的 */
+    function collectBody(terms, seen, limit) {
+      var hits = [];
+      for (var i = 0; i < items.length && hits.length < limit; i++) {
+        var item = items[i];
+        if (seen[item.url]) continue;
+        var body = bodyByUrl[item.url];
+        if (!body) continue;
+        var ok = true;
+        for (var j = 0; j < terms.length; j++) {
+          if (body.indexOf(terms[j]) === -1) { ok = false; break; }
+        }
+        if (ok) hits.push(item);
+      }
+      return hits;
+    }
+
+    var RESULT_LIMIT = 12;
+
+    function paint(terms, query, searching) {
       if (!currentResults.length) {
         resultsBox.innerHTML =
-          '<div class="search-empty">没有找到与「' + escapeHtml(query) + '」相关的内容</div>';
+          '<div class="search-empty">' + escapeHtml(t('search.noMatch', '没有找到与「{q}」相关的内容')).split('{q}').join(escapeHtml(query)) + '</div>';
         return;
       }
-
-      resultsBox.innerHTML = currentResults
-        .map(function (it, idx) { return resultHtml(it, terms, idx === 0); })
+      var html = currentResults
+        .map(function (it, idx) { return resultHtml(it, terms, idx === activeIndex); })
         .join('');
+      if (searching) {
+        /* 正文还在逐片到达：说清楚「还有结果在路上」，别让用户以为搜完了 */
+        html += '<div class="search-note">' + escapeHtml(t('search.searchingBody', '正在检索正文…')) + '</div>';
+      }
+      resultsBox.innerHTML = html;
       wireResults();
     }
 
+    function render(query) {
+      var q = query.trim().toLowerCase();
+      resultsBox.innerHTML = '';
+
+      if (!q) {
+        /* 没在搜索就不该继续拉正文分片 */
+        bodyActive = false;
+        bodyProgress = null;
+        activeIndex = -1;
+        currentResults = [];
+        var hint = items.slice(0, 5);
+        if (!hint.length) {
+          resultsBox.innerHTML = '<div class="search-empty">' + escapeHtml(t('search.startTyping', '输入关键词开始搜索')) + '</div>';
+          return;
+        }
+        resultsBox.innerHTML =
+          '<div style="padding:10px 14px 6px;font:500 .68rem/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint)">' +
+          escapeHtml(t('search.recent', '最近更新')) +
+          '</div>' +
+          hint.map(function (it) { return resultHtml(it, []); }).join('');
+        wireResults();
+        return;
+      }
+
+      var terms = q.split(/\s+/).filter(Boolean);
+      currentResults = collectMeta(terms, RESULT_LIMIT);
+      activeIndex = currentResults.length ? 0 : -1;
+
+      /* 每来一片正文就补一次结果；闭包捕获的是**本次**的 terms / query，
+         所以旧查询的补片只影响旧结果集，不会污染新查询。 */
+      bodyProgress = function () {
+        var seen = {};
+        currentResults.forEach(function (it) { seen[it.url] = true; });
+        var extra = collectBody(terms, seen, RESULT_LIMIT - currentResults.length);
+        if (extra.length) {
+          currentResults = currentResults.concat(extra);
+          if (activeIndex === -1) activeIndex = 0;
+        }
+        paint(terms, query, bodyLoaded < textShardCount && currentResults.length < RESULT_LIMIT);
+      };
+
+      bodyActive = true;
+      var searching = textShardCount > bodyLoaded && currentResults.length < RESULT_LIMIT;
+      paint(terms, query, searching);
+      pumpBodies();
+    }
+
     function resultHtml(item, terms, isActive) {
-      var kindLabel = item.kind === 'post' ? '文章' : item.kind === 'project' ? '项目' : '标签';
+      var kindLabel =
+        item.kind === 'post'
+          ? t('search.kindPost', '文章')
+          : item.kind === 'cloud_post'
+          ? t('search.kindCloudPost', '在线文章')
+          : item.kind === 'project'
+          ? t('search.kindProject', '项目')
+          : t('search.kindTag', '标签');
       return (
         '<a class="search-result' + (isActive ? ' is-active' : '') + '" href="' + ROOT + item.url + '">' +
         '<p class="search-result__title">' + highlight(item.title, terms) +
-        '<span class="search-kind">' + kindLabel + '</span></p>' +
+        '<span class="search-kind">' + escapeHtml(kindLabel) + '</span></p>' +
         '<p class="search-result__snippet">' + highlight(makeSnippet(item, terms), terms) + '</p>' +
         '</a>'
       );
@@ -561,20 +688,232 @@
 
       copyText(code.innerText).then(
         function () {
-          btn.textContent = '已复制';
+          btn.textContent = t('common.copied', '已复制');
           btn.classList.add('is-done');
-          toast('代码已复制到剪贴板');
+          toast(t('code.copied', '代码已复制到剪贴板'));
           setTimeout(function () {
-            btn.textContent = '复制';
+            btn.textContent = t('common.copy', '复制');
             btn.classList.remove('is-done');
           }, 1600);
         },
         function () {
-          btn.textContent = '复制失败';
-          setTimeout(function () { btn.textContent = '复制'; }, 1600);
+          btn.textContent = t('common.copyFailedShort', '复制失败');
+          setTimeout(function () { btn.textContent = t('common.copy', '复制'); }, 1600);
         }
       );
     });
+  })();
+
+  /* ================= 通用「复制某个值」按钮 =================
+   * 用途：订阅页复制 RSS 地址、后台复制分享链接等。按钮上写 data-copy-value="要复制的内容"，
+   * 不依赖任何 DOM 结构，比 data-copy（只认代码块）通用。
+   */
+  (function () {
+    function fallbackCopy(text) {
+      var ta = doc.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-9999px;opacity:0';
+      doc.body.appendChild(ta);
+      ta.select();
+      var done = false;
+      try { done = doc.execCommand('copy'); } catch (err) { done = false; }
+      doc.body.removeChild(ta);
+      return done;
+    }
+
+    doc.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-copy-value]');
+      if (!btn) return;
+      e.preventDefault();
+
+      var text = btn.getAttribute('data-copy-value') || '';
+      if (!text) return;
+
+      function ok() { toast(t('common.copied', '已复制')); }
+      function fail() { toast(t('common.copyFailed', '复制失败，请手动复制')); }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok, function () {
+          fallbackCopy(text) ? ok() : fail();
+        });
+      } else {
+        fallbackCopy(text) ? ok() : fail();
+      }
+    });
+  })();
+
+  /* ================= 归档：排序 + 加载更多（V2 / V3 / V15） =================
+   * 数据来自第 1 页内联的 <script type="application/json" data-archive-feed>。
+   * 为什么这么做：静态站的翻页是「多份 HTML」，而排序与增量展示都需要
+   * 跨页数据。服务端渲染好的分页仍然在（无 JS / 爬虫走那条路），但页面
+   * 里带了这份清单时，浏览器端就接管排序与「加载更多」，不再整页跳走。
+   */
+  (function () {
+    var list = $('[data-archive-list]');
+    var feedNode = doc.querySelector('[data-archive-feed]');
+    var toolbar = $('[data-archive-toolbar]');
+    if (!list || !feedNode) return;
+
+    var feed = null;
+    try {
+      feed = JSON.parse(feedNode.textContent || '');
+    } catch (err) {
+      /* 数据坏了就整个跳过：服务端渲染的分页照常可用 */
+      return;
+    }
+    if (!feed || !feed.items || !feed.items.length) return;
+
+    var items = feed.items;
+    var pageSize = feed.pageSize > 0 ? feed.pageSize : items.length;
+    var shown = Math.min(pageSize, items.length);
+    var order = 'latest';
+
+    var moreBtn = $('[data-load-more]');
+    var moreNote = $('[data-load-more-note]');
+    var pager = $('.pagination');
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function metricBits(item) {
+      var bits = [];
+      if (item.views) bits.push(item.views + ' <span data-i18n="list.metricViews">' + escapeHtml(t('list.metricViews', '阅读')) + '</span>');
+      if (item.likes) bits.push(item.likes + ' <span data-i18n="list.metricLikes">' + escapeHtml(t('list.metricLikes', '点赞')) + '</span>');
+      if (item.comments) bits.push(item.comments + ' <span data-i18n="list.metricComments">' + escapeHtml(t('list.metricComments', '评论')) + '</span>');
+      return bits.join(' · ');
+    }
+
+    function itemHtml(item) {
+      var read = item.minutes
+        ? '<span class="archive-item__read">' + item.minutes +
+          ' <span data-i18n="common.minutes">' + escapeHtml(t('common.minutes', '分钟')) + '</span></span>'
+        : '';
+      return (
+        '<a class="archive-item" href="' + ROOT + escapeHtml(item.url) + '" data-hot="' + (item.hot || 0) + '">' +
+        '<span class="archive-item__date">' + escapeHtml(item.date) + '</span>' +
+        '<span class="archive-item__title">' + escapeHtml(item.title) + '</span>' +
+        read +
+        '<span class="archive-item__metrics">' + metricBits(item) + '</span>' +
+        '</a>'
+      );
+    }
+
+    /* 当前该显示哪些条目：先按排序取整份清单，再截到 shown 条 */
+    function currentItems() {
+      if (order === 'hot') {
+        /* 热度相同（多为 0）时用原顺序兜底，保证排序稳定、不会来回跳 */
+        return items
+          .map(function (item, index) { return { item: item, index: index }; })
+          .sort(function (a, b) {
+            return (b.item.hot || 0) - (a.item.hot || 0) || a.index - b.index;
+          })
+          .slice(0, shown)
+          .map(function (entry) { return entry.item; });
+      }
+      return items.slice(0, shown);
+    }
+
+    function render() {
+      var visible = currentItems();
+      var groups = [];
+      var index = {};
+      visible.forEach(function (item) {
+        var year = String(item.year || (item.date || '').slice(0, 4));
+        if (!(year in index)) {
+          index[year] = groups.length;
+          groups.push({ year: year, items: [] });
+        }
+        groups[index[year]].items.push(item);
+      });
+
+      var html = groups
+        .map(function (group) {
+          var rows = group.items.map(function (item) { return '    ' + itemHtml(item); }).join('\n');
+          var count = group.items.length;
+          /* data-i18n-args 让「切语言」时这段数字也一起跟着翻译 */
+          var countText = escapeHtml(t('archive.postsCount', '{n} 篇')).replace('{n}', String(count));
+          return (
+            '<section class="archive-year">\n' +
+            '  <h2 class="archive-year__title">' + escapeHtml(group.year) + ' ' +
+            '<span data-i18n="archive.postsCount" data-i18n-args="' + count + '">' +
+            countText + '</span></h2>\n' +
+            '  <div class="archive-list">\n' + rows + '\n  </div>\n' +
+            '</section>'
+          );
+        })
+        .join('\n');
+
+      list.innerHTML = html || '';
+
+      if (moreBtn) {
+        if (shown < items.length) moreBtn.removeAttribute('hidden');
+        else moreBtn.setAttribute('hidden', '');
+      }
+      if (moreNote) {
+        if (shown >= items.length && items.length > pageSize) moreNote.removeAttribute('hidden');
+        else moreNote.setAttribute('hidden', '');
+      }
+      /* 语言切换后再把新插入的节点补上翻译 */
+      var i18n = window.WSBlogI18n;
+      if (i18n && typeof i18n.apply === 'function') i18n.apply(i18n.lang);
+    }
+
+    function setOrder(next, persist) {
+      if (next !== 'hot' && next !== 'latest') return;
+      order = next;
+      if (toolbar) {
+        $$('[data-sort]', toolbar).forEach(function (btn) {
+          var on = btn.getAttribute('data-sort') === order;
+          btn.classList.toggle('is-active', on);
+          btn.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+      }
+      if (persist !== false && window.history && window.history.replaceState) {
+        try {
+          var url = new URL(window.location.href);
+          if (order === 'hot') url.searchParams.set('sort', 'hot');
+          else url.searchParams.delete('sort');
+          window.history.replaceState(null, '', url.toString());
+        } catch (err) {
+          /* 老浏览器没有 URL 构造器：只是不能分享排序后的链接，不影响使用 */
+        }
+      }
+      render();
+    }
+
+    if (toolbar) {
+      toolbar.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-sort]');
+        if (!btn) return;
+        setOrder(btn.getAttribute('data-sort'));
+      });
+    }
+
+    if (moreBtn) {
+      moreBtn.addEventListener('click', function () {
+        shown = Math.min(shown + pageSize, items.length);
+        render();
+      });
+    }
+
+    /* JS 接管后服务端分页就多余了（「加载更多」能一直翻到底）。
+       保留链接只会让同一条内容有两个入口，藏掉它的同时不影响无 JS 场景。 */
+    if (pager && items.length > pageSize) pager.setAttribute('hidden', '');
+
+    var initial = '';
+    try {
+      initial = new URL(window.location.href).searchParams.get('sort') || '';
+    } catch (err) {
+      initial = /[?&]sort=hot/.test(window.location.search) ? 'hot' : '';
+    }
+    setOrder(initial === 'hot' ? 'hot' : 'latest', false);
   })();
 
   /* ================= 阅读进度 + 回到顶部 ================= */

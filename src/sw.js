@@ -13,13 +13,18 @@
 (function () {
   'use strict';
 
-  var VERSION = 'wsblog-v1';
+  var VERSION = 'wsblog-v2';
   var SCOPE_URL = new URL(self.registration.scope);
   var ROOT = SCOPE_URL.pathname;
 
+  /* 预缓存清单：只放「每个页面都要用、体积又小」的资源。
+     KaTeX / Mermaid / marked / highlight 都不在这里 —— 它们是按需加载的，
+     离线时拉不到就走各自的降级（公式显示源码、图表展开源码），不影响阅读。 */
   var CORE = [
     ROOT + 'assets/main.css',
     ROOT + 'assets/theme.js',
+    ROOT + 'assets/i18n.js',
+    ROOT + 'assets/vendor-map.js',
     ROOT + 'assets/app.js',
     ROOT + 'offline.html',
   ];

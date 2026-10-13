@@ -7,9 +7,12 @@
   "publishableKey": "wbpk_4Kq5LMrPlZrJl7t1FUig3H_TJ4HAxiCt7P2ofyFqLaY5c2NYG2sCf3v",
 
   "vendor": {
-    "_readme": "留空或填 http(s) 地址则用 CDN；填相对路径（如 vendor/marked.min.js）则使用随站点打包的本地文件（src/vendor/ 构建时拷到 dist/assets/vendor/），不依赖任何第三方 CDN。",
+    "_readme": "留空或填 http(s) 地址则用 CDN；填相对路径（如 vendor/marked.min.js）则使用随站点打包的本地文件（src/vendor/ 构建时拷到 dist/assets/vendor/），不依赖任何第三方 CDN。katex / mermaid 不进 <script> 标签，由 assets/math.js 在页面真的用到公式/图时才按需拉取（见 build.py 生成的 assets/vendor-map.js）。",
     "sdk": "vendor/cloud-sdk.js",
     "marked": "vendor/marked.min.js",
-    "highlight": "vendor/highlight.min.js"
+    "highlight": "vendor/highlight.min.js",
+    "katex": "vendor/katex/katex.min.js",
+    "katexCss": "vendor/katex/katex.min.css",
+    "mermaid": "vendor/mermaid.min.js"
   }
 }

@@ -39,13 +39,27 @@ from wsblog.cloudconf import (  # noqa: E402
     build_cloud_config_js,
     cloud_enabled,
     load_cloud_config,
+    vendor_url,
 )
 from wsblog.cloudposts import (  # noqa: E402
     cloud_posts_fingerprint,
     fetch_public_profiles,
     fetch_published_cloud_posts,
 )
-from wsblog.content import collect_tags, load_page, load_posts, load_projects  # noqa: E402
+from wsblog.cloudstats import (  # noqa: E402
+    apply_stats,
+    fetch_post_stats,
+    fetch_recent_comments,
+    interact_key,
+)
+from wsblog.content import (  # noqa: E402
+    collect_series,
+    collect_tags,
+    load_page,
+    load_posts,
+    load_projects,
+)
+from wsblog.i18n import T, build_i18n_js, normalize_lang  # noqa: E402
 from wsblog.server import serve  # noqa: E402
 from wsblog.templates.layout import layout  # noqa: E402
 from wsblog.templates.pages import (  # noqa: E402
@@ -67,6 +81,10 @@ from wsblog.templates.pages import (  # noqa: E402
     project_detail_page,
     projects_page,
     related_posts_block,
+    series_index_page,
+    series_page,
+    shortcuts_page,
+    subscribe_page,
     tag_page,
     tags_page,
     write_page,
@@ -79,10 +97,11 @@ CONTENT_DIR = os.path.join(ROOT_DIR, "content")
 DIST_DIR = os.path.join(ROOT_DIR, "dist")
 CONFIG_FILE = os.path.join(ROOT_DIR, "site.config.json")
 
-# 需要拷贝到 dist/assets/ 的浏览器端脚本
+# 需要拷贝到 dist/assets/ 的浏览器端脚本（手写文件；生成物由 build 直接 write）
 ASSET_SCRIPTS = (
     "theme.js",
     "app.js",
+    "math.js",
     "cloud.js",
     "notify.js",
     "cloud-markdown.js",
@@ -95,6 +114,7 @@ ASSET_SCRIPTS = (
     "admin.js",
     "cloud-posts.js",
     "upload.js",
+    "subscribe.js",
 )
 
 _ANCHOR_RE = re.compile(r"<a\s|</a>")
@@ -167,6 +187,18 @@ def _is_http_url(url) -> bool:
     return str(url or "").strip().lower().startswith(("http://", "https://"))
 
 
+def _math_scripts(*sources) -> list:
+    """页面真的出现公式 / Mermaid 图时才注入 math.js（V12）。
+
+    KaTeX 与 Mermaid 加起来 2.8 MB，宁可让 math.js 按需去拉，也不要让
+    每篇文章都背上这个代价；没有公式的页面连 math.js 这点体积都省下来。
+    """
+    for source in sources:
+        if source and (source.get("has_math") or source.get("has_mermaid")):
+            return ["math.js"]
+    return []
+
+
 def _author_for_post(post: dict, authors_by_id: dict) -> dict | None:
     """文章详情页的署名：只有该作者建了公开主页才返回（否则宁可不署名）。"""
     author_id = str(post.get("author_id") or "")
@@ -191,6 +223,10 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         # 云服务按 Origin 校验请求，这里兜底用站点 url，正式部署时应显式配置
         site_origin = str(config.get("url") or "").rstrip("/")
 
+    # 站点默认界面语言：构建期的静态文案（<title> / meta description）用它，
+    # 页内的可切换文案由 assets/i18n.js 在浏览器里替换
+    lang = normalize_lang(config.get("lang"))
+
     if clean and os.path.isdir(DIST_DIR):
         shutil.rmtree(DIST_DIR)
         print("· 已清空 dist/")
@@ -206,10 +242,10 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     # 所有入口上保持一致。拉取失败自动降级（本次构建少一批在线文章，不报错）。
     cloud_posts: list[dict] = []
     public_profiles: dict[str, dict] = {}
+    publishable_key = str(load_cloud_config().get("publishableKey") or "")
     if cloud:
         # 把静态文章的 slug 传给云端归一化：云文章落静态详情页时若与静态
         # 文章撞名，自动退回 post.html?slug=（客户端渲染兜底）
-        publishable_key = str(load_cloud_config().get("publishableKey") or "")
         cloud_posts = fetch_published_cloud_posts(
             site_origin=site_origin,
             publishable_key=publishable_key,
@@ -224,6 +260,21 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         [*posts, *cloud_posts],
         key=lambda post: (0 if post.get("pinned") else 1, -post["date"].timestamp()),
     )
+
+    # --- 互动统计 + 最近评论（V2 / V6 / V15）---
+    # 构建期从只读视图拉一次，把数字烘进静态 HTML：爬虫看得到、无 JS 也可用。
+    # 拉取失败一律按 0 / 空处理，绝不让云端拖垮构建。
+    post_stats: dict[str, dict] = {}
+    recent_comments: list[dict] = []
+    if cloud:
+        post_stats = fetch_post_stats(
+            site_origin=site_origin, publishable_key=publishable_key
+        )
+        recent_comments = fetch_recent_comments(
+            site_origin=site_origin, publishable_key=publishable_key, limit=6
+        )
+    # 即使拿不到统计也要跑：给每篇补上 views/likes/bookmarks/comment_count/hot
+    apply_stats(all_posts, post_stats)
 
     # --- 作者公开主页（authors/<owner_id>.html）---
     # 只给「有已发布文章的作者」建页：没有文章的空主页对访客没有意义，
@@ -251,6 +302,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
 
     projects = load_projects(CONTENT_DIR, include_drafts)
     tags = collect_tags(all_posts)
+    series = collect_series(all_posts)
     about_data = load_page(CONTENT_DIR, "about")
 
     options = config.get("options") or {}
@@ -265,9 +317,45 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     home_posts_count = option_int("homePosts", 8)
     home_posts = all_posts[:home_posts_count] if home_posts_count > 0 else all_posts
 
+    # 首页「站点动态」：评论需要把云端 slug 映射回站内 URL；映射不到就丢弃
+    # （评论所属文章可能已被删除或仍未发布）。
+    posts_by_interact = {interact_key(post): post for post in all_posts}
+    activity_comments = []
+    for comment in recent_comments:
+        target = posts_by_interact.get(comment["post_slug"])
+        if not target or not str(target["url"]).startswith("posts/"):
+            continue
+        activity_comments.append({**comment, "url": target["url"]})
+    # 「最近更新」按 updated 优先、否则用发布时间，取前 5
+    activity_updated = sorted(
+        all_posts,
+        key=lambda post: -(post.get("updated") or post["date"]).timestamp(),
+    )[:5]
+
     # 归档页分页（archive.html / archive-2.html …）
     archive_per_page = option_int("postsPerPage", 20)
     archive_pages, archive_total_pages = paginate(all_posts, archive_per_page)
+    # 归档页在首页做客户端排序 / 增量展示时，需要的数据源（V2 / V3 / V15）。
+    # items 的顺序就是服务端的默认顺序（置顶优先、再按时间倒序），
+    # 所以客户端「最新排序」= 原样使用这份数组，不用再排一遍。
+    archive_feed = {
+        "pageSize": archive_per_page,
+        "total": len(all_posts),
+        "items": [
+            {
+                "title": post["title"],
+                "url": post["url"],
+                "date": post["date"].astimezone().strftime("%Y-%m-%d"),
+                "year": str(post["date"].astimezone().year),
+                "hot": int(post.get("hot") or 0),
+                "views": int(post.get("views") or 0),
+                "likes": int(post.get("likes") or 0),
+                "comments": int(post.get("comment_count") or 0),
+                "minutes": int(post.get("reading_time") or 0),
+            }
+            for post in all_posts
+        ],
+    }
 
     # --- 首页 ---
     write(
@@ -287,6 +375,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 tags=tags,
                 root="",
                 total_posts=len(all_posts),
+                activity={"comments": activity_comments, "updated": activity_updated},
+                series=series,
             ),
         ),
     )
@@ -322,6 +412,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 cloud=cloud,
                 og_type="article",
                 og_image=str(project.get("cover") or ""),
+                scripts=_math_scripts(project),
                 content=project_detail_page(config=config, project=project, root=root_prefix(1)),
             ),
         )
@@ -337,6 +428,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             current="about.html",
             canonical="/about.html",
             cloud=cloud,
+            scripts=_math_scripts(about_data),
             content=about_page(config=config, page=about_data, root=""),
         ),
     )
@@ -353,11 +445,21 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             page_url("archive.html", page_no),
             layout(
                 config=config,
-                title="归档" if page_no == 1 else f"归档 · 第 {page_no} 页",
-                description=(
-                    "全部文章按发布时间归档。"
+                title=(
+                    T("archive.title", lang)
                     if page_no == 1
-                    else f"全部文章按发布时间归档，第 {page_no} 页。"
+                    else f'{T("archive.title", lang)} · {T("archive.page", lang, n=page_no)}'
+                ),
+                description=(
+                    T("archive.summary", lang, total=len(all_posts))
+                    if page_no == 1
+                    else T(
+                        "archive.summaryPaged",
+                        lang,
+                        total=len(all_posts),
+                        page=page_no,
+                        pages=archive_total_pages,
+                    )
                 ),
                 root="",
                 current="archive.html",
@@ -371,6 +473,9 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                     page=page_no,
                     total_pages=archive_total_pages,
                     total=len(all_posts),
+                    # 只有第一页带客户端数据源：排序 / 加载更多都在这一页发生
+                    feed=archive_feed if page_no == 1 else None,
+                    page_size=archive_per_page,
                 ),
             ),
         )
@@ -380,12 +485,16 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         "tags.html",
         layout(
             config=config,
-            title="标签",
-            description="按标签浏览全部文章。",
+            title=T("tags.title", lang),
+            description=T("tags.summary", lang),
             root="",
             current="tags.html",
             canonical="/tags.html",
             cloud=cloud,
+            breadcrumbs=[
+                (T("common.home", lang), "index.html", "common.home"),
+                (T("tags.title", lang), None, "tags.title"),
+            ],
             content=tags_page(config=config, tags=tags, posts=all_posts, root=""),
         ),
     )
@@ -399,15 +508,97 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             f"tags/{tag['slug']}.html",
             layout(
                 config=config,
-                title=f"标签：{tag['name']}",
-                description=f"标签「{tag['name']}」下的全部文章。",
+                title=f"{T('tag.title', lang)}：{tag['name']}",
+                description=T("tag.summary", lang, n=len(tag_posts)),
                 root=root_prefix(2),
                 current="tags.html",
                 canonical=f"/tags/{tag['slug']}.html",
                 cloud=cloud,
+                breadcrumbs=[
+                    (T("common.home", lang), "index.html", "common.home"),
+                    (T("tags.title", lang), "tags.html", "tags.title"),
+                    (tag["name"], None),
+                ],
                 content=tag_page(config=config, tag=tag, posts=tag_posts, root=root_prefix(2)),
             ),
         )
+
+    # --- 系列（V7）：系列总览 + 每个系列一页 ---
+    write(
+        "series.html",
+        layout(
+            config=config,
+            title=T("series.title", lang),
+            description=T("series.summary", lang),
+            root="",
+            current="series.html",
+            canonical="/series.html",
+            cloud=cloud,
+            breadcrumbs=[
+                (T("common.home", lang), "index.html", "common.home"),
+                (T("series.title", lang), None, "series.title"),
+            ],
+            content=series_index_page(config=config, series=series, root=""),
+        ),
+    )
+    if series:
+        os.makedirs(os.path.join(DIST_DIR, "series"), exist_ok=True)
+    for item in series:
+        write(
+            f"series/{item['slug']}.html",
+            layout(
+                config=config,
+                title=item["name"],
+                description=T("series.summary", lang),
+                root=root_prefix(2),
+                current="series.html",
+                canonical=f"/series/{item['slug']}.html",
+                cloud=cloud,
+                breadcrumbs=[
+                    (T("common.home", lang), "index.html", "common.home"),
+                    (T("series.title", lang), "series.html", "series.title"),
+                    (item["name"], None),
+                ],
+                content=series_page(config=config, item=item, root=root_prefix(2)),
+            ),
+        )
+
+    # --- 快捷键速查（V17）+ 订阅页（V11）---
+    write(
+        "shortcuts.html",
+        layout(
+            config=config,
+            title=T("shortcuts.title", lang),
+            description=T("shortcuts.lead", lang),
+            root="",
+            current="shortcuts.html",
+            canonical="/shortcuts.html",
+            cloud=cloud,
+            breadcrumbs=[
+                (T("common.home", lang), "index.html", "common.home"),
+                (T("shortcuts.title", lang), None, "shortcuts.title"),
+            ],
+            content=shortcuts_page(config=config, root=""),
+        ),
+    )
+    write(
+        "subscribe.html",
+        layout(
+            config=config,
+            title=T("subscribe.title", lang),
+            description=T("subscribe.lead", lang),
+            root="",
+            current="subscribe.html",
+            canonical="/subscribe.html",
+            cloud=cloud,
+            breadcrumbs=[
+                (T("common.home", lang), "index.html", "common.home"),
+                (T("subscribe.title", lang), None, "subscribe.title"),
+            ],
+            scripts=["subscribe.js"],
+            content=subscribe_page(config=config, root="", cloud=cloud),
+        ),
+    )
 
     # --- 作者公开主页（depth 1）---
     if authors:
@@ -507,7 +698,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 show_progress=True,
                 extra_head=extra_head,
                 cloud=cloud,
-                scripts=["interact.js"],
+                scripts=[*_math_scripts(post), "interact.js"],
                 og_type="article",
                 og_image=str(post.get("cover") or ""),
                 content=post_page(
@@ -557,7 +748,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["cloud-markdown.js", "upload.js", "draft.js", "write.js"],
+                scripts=["math.js", "cloud-markdown.js", "upload.js", "draft.js", "write.js"],
                 content=write_page(config=config, root=""),
             ),
         )
@@ -571,7 +762,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["cloud-markdown.js", "upload.js", "draft.js", "admin.js"],
+                scripts=["math.js", "cloud-markdown.js", "upload.js", "draft.js", "admin.js"],
                 content=admin_page(config=config, root=""),
             ),
         )
@@ -612,7 +803,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="posts.html",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["cloud-markdown.js", "cloud-posts.js"],
+                scripts=["math.js", "cloud-markdown.js", "cloud-posts.js"],
                 content=cloud_post_page(config=config, root=""),
             ),
         )
@@ -626,7 +817,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             root="",
             current="",
             cloud=cloud,
-            content=not_found_page(root="", posts=all_posts, tags=tags),
+            content=not_found_page(config=config, root="", posts=all_posts, tags=tags),
         ),
     )
 
@@ -636,6 +827,11 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         source = os.path.join(SRC_DIR, "scripts", name)
         if os.path.isfile(source):
             copy_file(source, os.path.join("assets", name))
+
+    # --- 界面文案词典 + 切换逻辑（由 wsblog/i18n.py 生成）---
+    # 生成而不是手写：词典与 Python 侧的 T() 共用同一份 MESSAGES，
+    # 构建期的静态文案和客户端的动态文案永远不会对不上。
+    write("assets/i18n.js", build_i18n_js(normalize_lang(config.get("lang"))))
 
     # --- 本地字体等自有资源（src/assets/** → dist/assets/**）---
     # 字体改为本地化后不再依赖 Google Fonts，必须随构建一起进产物
@@ -650,13 +846,6 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     # --- 云端配置（前端读 window.__CLOUD__）---
     if cloud:
         write("assets/cloud-config.js", build_cloud_config_js(config, site_origin=site_origin))
-        # 第三方库本地化（src/vendor/ → dist/assets/vendor/），不依赖外部 CDN
-        vendor_src = os.path.join(SRC_DIR, "vendor")
-        if os.path.isdir(vendor_src):
-            for name in sorted(os.listdir(vendor_src)):
-                source = os.path.join(vendor_src, name)
-                if name.endswith(".js") and os.path.isfile(source):
-                    copy_file(source, os.path.join("assets", "vendor", name))
 
         # 静态文章 slug 清单：管理员打开后台时静默同步到云端 known_slugs，
         # 作为浏览量接口的白名单（防匿名灌随机 slug 撑表）
@@ -672,8 +861,42 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             ),
         )
 
-    # --- 搜索索引 ---
-    search_items = [
+    # --- 第三方库本地化（src/vendor/ → dist/assets/vendor/）---
+    # 不依赖外部 CDN：marked / highlight / KaTeX / Mermaid 全部随站点打包。
+    # 注意这一层不在 cloud 分支里 —— KaTeX 与 Mermaid 和云能力毫无关系，
+    # 纯静态站点也要能用（之前放在 cloud 分支里是个隐患）。
+    vendor_src = os.path.join(SRC_DIR, "vendor")
+    if os.path.isdir(vendor_src):
+        for walk_root, _dirs, files in os.walk(vendor_src):
+            for name in files:
+                full = os.path.join(walk_root, name)
+                rel = os.path.relpath(full, vendor_src)
+                copy_file(full, os.path.join("assets", "vendor", rel))
+
+    # 供 assets/math.js 按需拉取：地址仍以 cloud.config.json 的 vendor 映射为唯一来源，
+    # 避免路径散落在 JS 里。这个文件在任何部署形态下都存在。
+    write(
+        "assets/vendor-map.js",
+        "/* 本文件由 build.py 自动生成，请勿手改；改 cloud.config.json 后重新构建。 */\n"
+        "window.__VENDOR__ = "
+        + json.dumps(
+            {
+                key: vendor_url(key)
+                for key in ("marked", "highlight", "katex", "katexCss", "mermaid", "sdk")
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + ";\n",
+    )
+
+    # --- 搜索索引（V16：元数据与正文分离）---
+    # 以前是一个文件带正文一起下发，体积随文章数线性膨胀（每篇 1600 字的正文）。
+    # 现在拆成两层：
+    #   search-index.json        只含标题 / 摘要 / 标签 / 日期 —— 体积稳定，打开搜索就拉
+    #   search-index/text-N.json 每片若干条的正文 —— 只在真的需要全文检索时才逐片拉
+    # 前端的顺序是「先出元数据命中，再后台补全文命中」，首屏结果不再等大文件。
+    search_meta = [
         {
             "kind": "post" if post["type"] == "post" else "cloud_post",
             "title": post["title"],
@@ -681,11 +904,10 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             "summary": post["summary"],
             "tags": post["tags"],
             "date": iso_date(post["date"])[:10],
-            "text": truncate(post["plain"], 1600),
         }
         for post in all_posts
     ]
-    search_items += [
+    search_meta += [
         {
             "kind": "project",
             "title": project["title"],
@@ -693,11 +915,10 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             "summary": project["description"],
             "tags": [*project["tags"], *project["stack"]],
             "date": iso_date(project["date"])[:10],
-            "text": truncate(project["plain"], 900),
         }
         for project in projects
     ]
-    search_items += [
+    search_meta += [
         {
             "kind": "tag",
             "title": f"标签：{tag['name']}",
@@ -705,17 +926,37 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             "summary": f"{tag['count']} 篇文章",
             "tags": [tag["name"]],
             "date": "",
-            "text": "",
         }
         for tag in tags
     ]
+
+    # 正文分片：只给真有可能被全文检索搜到的内容（文章与项目），标签不需要
+    body_rows = [
+        {"url": post["url"], "text": truncate(post["plain"], 1600)}
+        for post in all_posts
+    ] + [
+        {"url": project["url"], "text": truncate(project["plain"], 900)}
+        for project in projects
+    ]
+    body_rows = [row for row in body_rows if row["text"]]
+    text_shard_size = 16
+    shards = [body_rows[i:i + text_shard_size] for i in range(0, len(body_rows), text_shard_size)]
+    for index, shard in enumerate(shards, start=1):
+        write(
+            f"search-index/text-{index}.json",
+            json.dumps(shard, ensure_ascii=False, separators=(",", ":")),
+        )
+
     write(
         "search-index.json",
         json.dumps(
             {
                 "generatedAt": iso_date(datetime.now().astimezone()),
-                "count": len(search_items),
-                "items": search_items,
+                "count": len(search_meta),
+                # 前端据此拼 search-index/text-<n>.json；0 表示没有正文分片
+                "textShards": len(shards),
+                "textShardSize": text_shard_size,
+                "items": search_meta,
             },
             ensure_ascii=False,
             separators=(",", ":"),

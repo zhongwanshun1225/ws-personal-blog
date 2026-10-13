@@ -50,26 +50,32 @@
   "nav": [
     {
       "label": "首页",
+      "en": "Home",
       "url": "index.html"
     },
     {
       "label": "项目",
+      "en": "Projects",
       "url": "projects.html"
     },
     {
       "label": "在线文章",
+      "en": "Cloud Posts",
       "url": "posts.html"
     },
     {
       "label": "归档",
+      "en": "Archive",
       "url": "archive.html"
     },
     {
       "label": "标签",
+      "en": "Tags",
       "url": "tags.html"
     },
     {
       "label": "关于",
+      "en": "About",
       "url": "about.html"
     }
   ],
@@ -114,6 +120,7 @@
   },
   "footer": {
     "note": "本站由 Python 自建静态生成器构建，托管于云服务。",
+    "noteEn": "Built with a hand-rolled Python static site generator, hosted on a cloud service.",
     "icp": ""
   },
   "options": {

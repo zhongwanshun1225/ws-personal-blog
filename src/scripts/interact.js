@@ -53,8 +53,25 @@
   var busyLike = false;
   var busyBookmark = false;
 
+  /* 文案取用：优先用 app.js 提供的 window.__wsT（读 assets/i18n.js 的词典），
+     拿不到就退回传进来的中文，保证脚本单独加载时也不会显示成 key。 */
+  function t(key, fallback) {
+    if (typeof window.__wsT === 'function') return window.__wsT(key, fallback);
+    return fallback || key;
+  }
+
   function toast(message) {
     C.toast(message);
+  }
+
+  /* 评论内容来自用户，拼进 innerHTML 前必须转义（与 app.js 里的同名工具一致）。 */
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function goLogin() {
@@ -88,7 +105,7 @@
       bookmarkBtn.setAttribute('aria-pressed', state.bookmarked ? 'true' : 'false');
       bookmarkBtn.disabled = busyBookmark;
     }
-    if (bookmarkLabel) bookmarkLabel.textContent = state.bookmarked ? '已收藏' : '收藏';
+    if (bookmarkLabel) bookmarkLabel.textContent = state.bookmarked ? t('interact.bookmarked','已收藏') : t('interact.bookmark','收藏');
   }
 
   function renderCounts() {
@@ -109,8 +126,13 @@
     }
     if (inputEl) {
       inputEl.placeholder = replyTarget
-        ? '回复 @' + replyTarget.name + ' …'
-        : '写下你的看法…';
+        ? t('interact.replyPlaceholder', '回复 {name} …').split('{name}').join(replyTarget.name)
+        : t('interact.placeholder', '写下你的看法…');
+    }
+    if (submitEl) {
+      submitEl.textContent = replyTarget
+        ? t('interact.submitReply', '发表回复')
+        : t('interact.submit', '发表评论');
     }
   }
 
@@ -173,7 +195,7 @@
   function toggleLike() {
     if (busyLike || !inited) return;
     if (!C.currentUser()) {
-      toast('登录后才能点赞');
+      toast(t('interact.likeNeedLogin','登录后才能点赞'));
       goLogin();
       return;
     }
@@ -194,13 +216,13 @@
         }
         var rows = (res && res.data) || [];
         /* RLS 会把「不是我的行」过滤掉，返回空数组即代表没生效 */
-        if (rows.length === 0) throw new Error(wasLiked ? '取消点赞没有生效' : '点赞没有生效');
+        if (rows.length === 0) throw new Error(wasLiked ? t('interact.unlikeFail','取消点赞没有生效') : t('interact.likeFail','点赞没有生效'));
         return readState();
       })
       .then(function () {
         busyLike = false;
         renderActions();
-        toast(state.liked ? '已点赞' : '已取消点赞');
+        toast(state.liked ? t('interact.liked','已点赞') : t('interact.like','点赞'));
       })
       .catch(function (err) {
         busyLike = false;
@@ -213,7 +235,7 @@
   function toggleBookmark() {
     if (busyBookmark || !inited) return;
     if (!C.currentUser()) {
-      toast('登录后才能收藏');
+      toast(t('interact.bookmarkNeedLogin','登录后才能收藏'));
       goLogin();
       return;
     }
@@ -233,14 +255,14 @@
         }
         var rows = (res && res.data) || [];
         if (rows.length === 0) {
-          throw new Error(wasBookmarked ? '取消收藏没有生效' : '收藏没有生效');
+          throw new Error(wasBookmarked ? t('interact.unbookmarkFail','取消收藏没有生效') : t('interact.bookmarkFail','收藏没有生效'));
         }
         return readState();
       })
       .then(function () {
         busyBookmark = false;
         renderActions();
-        toast(state.bookmarked ? '已加入收藏' : '已取消收藏');
+        toast(state.bookmarked ? t('interact.bookmarked','已收藏') : t('interact.bookmark','收藏'));
       })
       .catch(function (err) {
         busyBookmark = false;
@@ -256,7 +278,7 @@
     var name = item.author_name || '匿名读者';
     var replyBtn =
       '<button class="comment__reply" type="button" data-comment-reply="' + item.id +
-      '" data-comment-reply-name="' + C.escapeHtml(name) + '">回复</button>';
+      '" data-comment-reply-name="' + C.escapeHtml(name) + '">' + esc(t('interact.footerReply','回复')) + '</button>';
     var repliesHtml = '';
     if (replies && replies.length) {
       repliesHtml =
@@ -272,7 +294,7 @@
        免得前端以为「发出去了就是上线了」。 */
     var pending = item.status === 'pending';
     var badge = pending
-      ? '<span class="comment__badge">审核中</span>'
+      ? '<span class="comment__badge">' + esc(t('interact.pendingBadge','审核中')) + '</span>'
       : '';
     return (
       '<li class="comment' + (pending ? ' comment--pending' : '') + '" data-comment="' + item.id + '">' +
@@ -284,7 +306,7 @@
       '<span class="comment__time">' + C.escapeHtml(relativeTime(item.created_at)) + '</span>' +
       replyBtn +
       (item.is_mine
-        ? '<button class="comment__delete" type="button" data-comment-delete="' + item.id + '">删除</button>'
+        ? '<button class="comment__delete" type="button" data-comment-delete="' + item.id + '">' + esc(t('interact.footerDelete','删除')) + '</button>'
         : '') +
       '</div>' +
       '<p class="comment__text">' + C.escapeHtml(item.content).replace(/\n/g, '<br>') + '</p>' +
@@ -296,7 +318,7 @@
   /* 平铺行 → 两级楼中楼：顶层按时间倒序，回复按时间正序挂在父评论下 */
   function renderComments(rows) {
     if (!rows.length) {
-      listEl.innerHTML = '<li class="comment-empty">还没有评论，来说点什么吧。</li>';
+      listEl.innerHTML = '<li class="comment-empty">' + esc(t('interact.empty','还没有评论，来说点什么吧。')) + '</li>';
       return;
     }
     var top = [];
@@ -330,7 +352,7 @@
       })
       .catch(function (err) {
         console.warn('[interact] 评论加载失败', err && err.message);
-        listEl.innerHTML = '<li class="comment-empty">评论暂时加载失败，请刷新重试。</li>';
+        listEl.innerHTML = '<li class="comment-empty">' + esc(t('interact.loadFail','评论暂时加载失败，请刷新重试。')) + '</li>';
       });
   }
 
@@ -340,7 +362,7 @@
     qa('[data-comment-reply]', listEl).forEach(function (btn) {
       btn.addEventListener('click', function () {
         if (!C.currentUser()) {
-          toast('登录后才能回复');
+          toast(t('interact.replyNeedLogin','登录后才能回复'));
           goLogin();
           return;
         }
@@ -357,7 +379,7 @@
     qa('[data-comment-delete]', listEl).forEach(function (btn) {
       btn.addEventListener('click', function () {
         var id = btn.getAttribute('data-comment-delete');
-        if (!window.confirm('确定删除这条评论吗？')) return;
+        if (!window.confirm(t('interact.confirmDelete','确定删除这条评论吗？'))) return;
         btn.disabled = true;
         C.db()
           .from('comments')
@@ -367,13 +389,13 @@
           .then(function (res) {
             if (res && res.error) throw res.error;
             var rows = (res && res.data) || [];
-            if (rows.length === 0) throw new Error('只能删除自己的评论');
-            toast('评论已删除');
+            if (rows.length === 0) throw new Error(t('interact.onlyMine','只能删除自己的评论'));
+            toast(t('interact.deleted','评论已删除'));
             return loadComments();
           })
           .catch(function (err) {
             btn.disabled = false;
-            toast((err && err.message) || '删除失败，请稍后重试');
+            toast((err && err.message) || t('interact.deleteFail','删除失败，请稍后重试'));
           });
       });
     });
@@ -383,18 +405,18 @@
     if (event) event.preventDefault();
     if (!inited) return;
     if (!C.currentUser()) {
-      toast('登录后才能评论');
+      toast(t('interact.needLogin','登录后才能评论'));
       goLogin();
       return;
     }
     if (C.requireActive()) return;
     var content = ((inputEl && inputEl.value) || '').trim();
     if (!content) {
-      toast('评论内容不能为空');
+      toast(t('interact.needContent','评论内容不能为空'));
       return;
     }
     if (content.length > 1000) {
-      toast('评论最多 1000 字');
+      toast(t('interact.tooLong','评论最多 1000 字'));
       return;
     }
     if (submitEl) submitEl.disabled = true;
@@ -413,16 +435,16 @@
       .then(function (res) {
         if (res && res.error) throw res.error;
         var rows = (res && res.data) || [];
-        if (rows.length === 0) throw new Error('评论没有保存成功，请稍后重试');
+        if (rows.length === 0) throw new Error(t('interact.saveFail','评论没有保存成功，请稍后重试'));
         if (inputEl) inputEl.value = '';
         setReplyTarget(null);
         /* 用服务端回写的 status 决定文案：普通读者的评论会先进待审，
            不能提示「已发布」——那会让人以为线上已经能看到。 */
         var needReview = rows[0] && rows[0].status === 'pending';
         if (needReview) {
-          toast(wasReply ? '回复已提交，站长通过后显示' : '评论已提交，站长通过后显示');
+          toast(wasReply ? t('interact.pendingReply','回复已提交，站长通过后显示') : t('interact.pending','评论已提交，站长通过后显示'));
         } else {
-          toast(wasReply ? '回复已发布' : '评论已发布');
+          toast(wasReply ? t('interact.publishedReply','回复已发布') : t('interact.published','评论已发布'));
         }
         return loadComments();
       })

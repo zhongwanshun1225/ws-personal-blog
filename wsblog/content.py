@@ -10,7 +10,7 @@ from .frontmatter import parse_frontmatter
 from .markdown import render_markdown
 from .util import html_to_plain_text, parse_date, reading_time, slugify, truncate
 
-__all__ = ["load_posts", "load_projects", "load_page", "collect_tags"]
+__all__ = ["load_posts", "load_projects", "load_page", "collect_tags", "collect_series"]
 
 _TAG_SPLIT_RE = re.compile(r"[,，、]")
 
@@ -76,12 +76,19 @@ def load_posts(content_dir: str, include_drafts: bool = False) -> list[dict]:
                 "date": _normalize_date(data.get("date"), stat),
                 "updated": _normalize_date(data["updated"], stat) if data.get("updated") else None,
                 "tags": _normalize_tags(data.get("tags")),
+                # series（系列 / 专栏）：一个字符串即可 —— 同一 series 的文章会
+                # 聚合成 series/<slug>.html，并按日期升序排（连载要按顺序读）
+                "series": str(data["series"]).strip() if data.get("series") else "",
                 "summary": str(data["summary"]) if data.get("summary") else truncate(plain, 110),
                 "cover": str(data["cover"]) if data.get("cover") else "",
                 "draft": is_draft,
                 "pinned": data.get("pinned") is True,
                 "html": html,
                 "toc": rendered["toc"],
+                # V12：文章里是否出现数学公式 / Mermaid 图 —— 决定构建时要不要
+                # 给这一页注入 KaTeX / Mermaid（两者都是几百 KB 的库，不能全站背）
+                "has_math": rendered.get("has_math", False),
+                "has_mermaid": rendered.get("has_mermaid", False),
                 "plain": plain,
                 "reading_time": reading_time(plain),
                 "words": len(plain),
@@ -133,6 +140,8 @@ def load_projects(content_dir: str, include_drafts: bool = False) -> list[dict]:
                 "links": links,
                 "draft": data.get("draft") is True or base_name.startswith("_"),
                 "html": rendered["html"],
+                "has_math": rendered.get("has_math", False),
+                "has_mermaid": rendered.get("has_mermaid", False),
                 "plain": plain,
                 "source_path": file_path,
             }
@@ -164,6 +173,8 @@ def load_page(content_dir: str, name: str):
         "subtitle": str(data["subtitle"]) if data.get("subtitle") else "",
         "html": rendered["html"],
         "toc": rendered["toc"],
+        "has_math": rendered.get("has_math", False),
+        "has_mermaid": rendered.get("has_mermaid", False),
         "plain": plain,
         "reading_time": reading_time(plain),
     }
@@ -178,4 +189,33 @@ def collect_tags(posts: list[dict]) -> list[dict]:
 
     items = [{"name": name, "slug": slugify(name), "count": count} for name, count in counts.items()]
     items.sort(key=lambda tag: (-tag["count"], tag["name"]))
+    return items
+
+
+def collect_series(posts: list[dict]) -> list[dict]:
+    """汇总 系列 -> 文章列表（按发布时间升序，连载顺序可读）。
+
+    只收有 ``series`` 字段的文章；单篇也成系列（作者可能先写一篇占位），
+    但聚合页只在系列数 > 0 时生成。
+    """
+    grouped: dict[str, list[dict]] = {}
+    for post in posts:
+        name = str(post.get("series") or "").strip()
+        if name:
+            grouped.setdefault(name, []).append(post)
+
+    items = []
+    for name, group in grouped.items():
+        ordered = sorted(group, key=lambda post: post["date"].timestamp())
+        items.append(
+            {
+                "name": name,
+                "slug": slugify(name),
+                "count": len(ordered),
+                "posts": ordered,
+                # 系列页的排序按最新一篇的时间倒序，最近写过的排前面
+                "latest": max(post["date"] for post in ordered),
+            }
+        )
+    items.sort(key=lambda item: -item["latest"].timestamp())
     return items

@@ -27,6 +27,15 @@
     return C.escapeHtml(text);
   }
 
+  /* 文案（V13）：字典在 assets/i18n.js，这里只做兜底取值 */
+  function t(key, fallback) {
+    if (typeof window.__wsT === 'function') {
+      var str = window.__wsT(key, fallback);
+      if (str) return str;
+    }
+    return fallback || key;
+  }
+
   /* ---------------- Markdown 渲染 ---------------- */
 
   /* 具体实现在 cloud-markdown.js（后台预览与阅读页共用同一份规则） */
@@ -61,10 +70,12 @@
 
   /* ---------------- 列表页 ---------------- */
 
-  /* 每页条数。文章多了之后一次渲染上百张卡片会明显拖慢首屏，
-     所以列表改为客户端分页，页号同步到 ?page=（可分享、可后退）。 */
+  /* 每页条数。文章多了之后一次渲染上百张卡片会明显拖慢首屏。
+     分页从「一次拉 200 条再在本地切页」改成**服务端分页**（.range），
+     这样首屏只传 10 条，条数上限也不再是写死的 200（V3）。 */
   var PAGE_SIZE = 10;
-  var allPosts = [];
+  var pagePosts = [];
+  var totalCount = 0;
   var currentPage = 1;
 
   function readPageParam() {
@@ -88,6 +99,21 @@
     }
   }
 
+  /* 骨架屏（V18）：数据在路上时先把版式占住，避免「加载中…」到成列卡片之间
+     那次剧烈的跳动。条数与 PAGE_SIZE 对齐，视觉上是一次「填充」而不是「重排」。 */
+  function skeletonHtml(count) {
+    var card =
+      '<li class="skeleton-card" aria-hidden="true">' +
+      '<div class="skeleton skeleton-line skeleton-line--short"></div>' +
+      '<div class="skeleton skeleton-line skeleton-line--title"></div>' +
+      '<div class="skeleton skeleton-line"></div>' +
+      '<div class="skeleton skeleton-line skeleton-line--short"></div>' +
+      '</li>';
+    var out = '';
+    for (var i = 0; i < count; i += 1) out += card;
+    return out;
+  }
+
   function itemHtml(post) {
     var tags = tagsOf(post.tags);
     var chips = tags
@@ -100,7 +126,7 @@
       '<div class="post-item__link">' +
       '<div class="post-item__date">' +
       escapeHtml(formatDate(post.published_at || post.created_at)) +
-      '<span>' + readingTime(post.content_md) + ' 分钟</span>' +
+      '<span>' + readingTime(post.content_md) + ' ' + escapeHtml(t('common.minutes', '分钟')) + '</span>' +
       '</div>' +
       '<div class="post-item__main">' +
       '<h3 class="post-item__title">' +
@@ -137,14 +163,16 @@
       else if (numbers.length && numbers[numbers.length - 1] !== '…') numbers.push('…');
     }
 
-    var parts = [link(currentPage - 1, '← 上一页', 'prev', currentPage <= 1)];
+    var parts = [
+      link(currentPage - 1, '← ' + t('pagination.prev', '上一页'), 'prev', currentPage <= 1),
+    ];
     numbers.forEach(function (n) {
       if (n === '…') parts.push('<span class="pagination__gap">…</span>');
       else if (n === currentPage)
         parts.push('<span class="pagination__link is-current" aria-current="page">' + n + '</span>');
       else parts.push(link(n, String(n), '', false));
     });
-    parts.push(link(currentPage + 1, '下一页 →', 'next', currentPage >= totalPages));
+    parts.push(link(currentPage + 1, t('pagination.next', '下一页') + ' →', 'next', currentPage >= totalPages));
 
     pagerEl.innerHTML = parts.join('');
   }
@@ -156,10 +184,9 @@
     var countEl = q('[data-cloud-count]', listRoot);
     var pagerEl = q('[data-cloud-pagination]', listRoot);
 
-    var total = allPosts.length;
-    if (countEl) countEl.textContent = String(total);
+    if (countEl) countEl.textContent = String(totalCount);
 
-    if (!total) {
+    if (!totalCount) {
       if (listEl) listEl.innerHTML = '';
       if (emptyEl) emptyEl.removeAttribute('hidden');
       if (pagerEl) pagerEl.setAttribute('hidden', '');
@@ -167,22 +194,59 @@
     }
     if (emptyEl) emptyEl.setAttribute('hidden', '');
 
-    var totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    var totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
     if (currentPage > totalPages) currentPage = totalPages;
     if (currentPage < 1) currentPage = 1;
 
-    var start = (currentPage - 1) * PAGE_SIZE;
-    if (listEl) listEl.innerHTML = allPosts.slice(start, start + PAGE_SIZE).map(itemHtml).join('');
+    /* 这一页的内容服务端已经切好了，直接渲染 */
+    if (listEl) listEl.innerHTML = pagePosts.map(itemHtml).join('');
     renderPagination(pagerEl, totalPages);
   }
 
+  /* 拉第 page 页。用 .range + count:exact 让服务端分页并回传总数，
+     前端因此不再需要「先拉一大堆再切页」，条数上限也不再写死。 */
+  function fetchPage(page) {
+    var from = (page - 1) * PAGE_SIZE;
+    return C.db()
+      .from('posts_public')
+      .select('id, slug, title, summary, tags, content_md, published_at, created_at', {
+        count: 'exact',
+      })
+      .order('published_at', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1)
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        pagePosts = (res && res.data) || [];
+        if (res && typeof res.count === 'number' && res.count >= 0) totalCount = res.count;
+        else if (pagePosts.length < PAGE_SIZE && page === 1) totalCount = pagePosts.length;
+      });
+  }
+
   function goToPage(page) {
-    var totalPages = Math.max(1, Math.ceil(allPosts.length / PAGE_SIZE));
+    var totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
     var target = Math.min(Math.max(1, page), totalPages);
     if (target === currentPage) return;
     currentPage = target;
     syncPageParam(currentPage);
-    renderPage();
+
+    var listEl = q('[data-cloud-post-list]', listRoot);
+    var statusEl = q('[data-cloud-status]', listRoot);
+    if (listEl) listEl.innerHTML = skeletonHtml(Math.min(PAGE_SIZE, 3));
+    if (statusEl) statusEl.removeAttribute('hidden');
+
+    fetchPage(currentPage)
+      .then(function () {
+        if (statusEl) statusEl.setAttribute('hidden', '');
+        renderPage();
+      })
+      .catch(function (err) {
+        console.warn('[cloud-posts] 翻页失败', err && err.message);
+        if (statusEl) {
+          statusEl.textContent = t('posts.loadFailed', '文章列表加载失败，请刷新重试。');
+          statusEl.removeAttribute('hidden');
+        }
+      });
+
     var head = q('.page-head', listRoot);
     if (head && head.scrollIntoView) head.scrollIntoView({ block: 'start' });
   }
@@ -201,29 +265,42 @@
     window.addEventListener('popstate', function () {
       var page = readPageParam();
       if (page === currentPage) return;
-      currentPage = page;
-      renderPage();
+      /* 后退 / 前进也要重新拉那一页（数据在服务端，不在内存里） */
+      goToPageFromHistory(page);
     });
+  }
+
+  /* 历史导航专用：允许「回到同一页号也重拉」，并跳过页号取整的提前返回 */
+  function goToPageFromHistory(page) {
+    var totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+    currentPage = Math.min(Math.max(1, page), totalPages);
+    var listEl = q('[data-cloud-post-list]', listRoot);
+    if (listEl) listEl.innerHTML = skeletonHtml(Math.min(PAGE_SIZE, 3));
+    fetchPage(currentPage)
+      .then(function () {
+        renderPage();
+      })
+      .catch(function (err) {
+        console.warn('[cloud-posts] 翻页失败', err && err.message);
+      });
   }
 
   function loadList() {
     var statusEl = q('[data-cloud-status]', listRoot);
-    C.db()
-      .from('posts_public')
-      .select('id, slug, title, summary, tags, content_md, published_at, created_at')
-      .order('published_at', { ascending: false })
-      .limit(200)
-      .then(function (res) {
-        if (res && res.error) throw res.error;
+    var listEl = q('[data-cloud-post-list]', listRoot);
+    currentPage = readPageParam();
+    /* 先把骨架铺上：首屏不再是一行「加载中…」然后突然变成一整列卡片 */
+    if (listEl) listEl.innerHTML = skeletonHtml(3);
+    fetchPage(currentPage)
+      .then(function () {
         if (statusEl) statusEl.setAttribute('hidden', '');
-        allPosts = (res && res.data) || [];
-        currentPage = readPageParam();
         renderPage();
       })
       .catch(function (err) {
         console.warn('[cloud-posts] 列表加载失败', err && err.message);
+        if (listEl) listEl.innerHTML = '';
         if (statusEl) {
-          statusEl.textContent = '文章列表加载失败，请刷新重试。';
+          statusEl.textContent = t('posts.loadFailed', '文章列表加载失败，请刷新重试。');
           statusEl.removeAttribute('hidden');
         }
       });
@@ -235,6 +312,8 @@
     var bodyEl = q('[data-cloud-body]', detailRoot);
     var headEl = q('[data-cloud-head]', detailRoot);
     var interactEl = q('[data-interact]', detailRoot);
+    var crumbEl = q('[data-cloud-crumb]', detailRoot);
+    if (crumbEl) crumbEl.setAttribute('hidden', '');
     if (headEl) headEl.innerHTML =
       '<span class="eyebrow">404</span>' +
       '<h1 class="article-head__title">文章不存在</h1>' +
@@ -251,6 +330,13 @@
     var bodyEl = q('[data-cloud-body]', detailRoot);
     var tags = tagsOf(post.tags);
     var published = post.published_at || post.created_at;
+
+    /* 面包屑的最后一层要等文章拿到才知道（V10） */
+    var crumbEl = q('[data-cloud-crumb]', detailRoot);
+    if (crumbEl) {
+      crumbEl.textContent = post.title;
+      crumbEl.removeAttribute('hidden');
+    }
 
     document.title = post.title + ' · ' + (C.config.siteName || document.title.split(' · ')[1] || '');
     var desc = document.querySelector('meta[name="description"]');

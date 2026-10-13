@@ -10,9 +10,20 @@ from datetime import datetime
 from urllib.parse import quote
 
 from ..cloudconf import vendor_url
+from ..i18n import LANGS, LANG_ENDONYMS, LANG_LABELS, T, normalize_lang
 from ..util import escape_html as esc
 
-__all__ = ["layout", "render_social", "render_appearance", "render_mirror_redirect", "icons"]
+__all__ = [
+    "layout",
+    "render_social",
+    "render_appearance",
+    "render_mirror_redirect",
+    "breadcrumb_nav",
+    "breadcrumb_json_ld",
+    "i18n_config_attr",
+    "lazy_img",
+    "icons",
+]
 
 # ---------- 内联图标（不依赖图标库，无额外请求） ----------
 icons = {
@@ -94,6 +105,33 @@ THEME_BOOT = (
 )
 
 
+# 界面语言预判（V13）。放在 <head> 里、样式之前执行：
+#   1. 把 <html data-lang> 提前设成访客真正要看的语言；
+#   2. 若与站点默认语言不同，给 <html> 打上 data-lang-switching，
+#      配合 main.css 里的一条规则把 [data-i18n] 暂时藏起来，避免「先中文后英文」的闪动。
+# ⚠️ 安全绳：这个内联脚本**自己**兜一个 1.5s 的定时器摘掉 data-lang-switching，
+#    这样即便 assets/i18n.js 因为任何原因没跑起来，文案也不会永久隐形。
+#    JS 关闭的情况由 <noscript> 里的一条 !important 规则兜底。
+I18N_BOOT = (
+    "<script>(function(){var d=document.documentElement;"
+    "var def=d.getAttribute('data-lang-default')||'zh-CN';"
+    "function norm(v){v=String(v||'').toLowerCase().replace('_','-');"
+    "if(v.indexOf('en')===0)return 'en';if(v.indexOf('zh')===0)return 'zh-CN';return '';}"
+    "var lang='';try{var m=/[?&]lang=([^&#]+)/.exec(location.search);"
+    "if(m)lang=norm(decodeURIComponent(m[1]));"
+    "if(!lang)lang=norm(localStorage.getItem('wsblog:lang'));}catch(e){}"
+    "lang=lang||def;d.setAttribute('data-lang',lang);d.lang=lang;"
+    "if(lang!==def){d.setAttribute('data-lang-switching','');"
+    "setTimeout(function(){d.removeAttribute('data-lang-switching');},1500);}})();</script>"
+)
+
+# data-lang-switching 期间藏起待替换的文案节点。只在「语言与默认不同」时才生效，
+# 中文访客（绝大多数）完全不受影响。noscript 里的 !important 规则保证 JS 关闭时正常显示。
+I18N_GUARD_CSS = (
+    '<noscript><style>[data-i18n],[data-i18n-attr]{visibility:visible !important}</style></noscript>'
+)
+
+
 # 安全兜底（meta 形式的 CSP）。这几条不需要放宽任何现有脚本，但正好堵死两条
 # 真实可利用的路径：
 #   form-action 'none' —— 正文里伪造的 <form action="https://evil.example"> 登录框无处投递
@@ -160,8 +198,11 @@ APPEARANCE_SWATCHES = (
 )
 
 
-def render_appearance() -> str:
-    """顶栏的外观设置按钮 + 弹出面板。"""
+def render_appearance(lang: str = "zh-CN") -> str:
+    """顶栏的外观设置按钮 + 弹出面板（文案可切换）。"""
+    def _t(key: str, **kw) -> str:
+        return T(key, lang, **kw)
+
     checks = "".join(
         f'<button class="swatch" type="button" role="radio" '
         f'aria-checked="{"true" if key == "teal" else "false"}" '
@@ -172,25 +213,53 @@ def render_appearance() -> str:
     return (
         '<div class="appearance" data-appearance>'
         '<button class="appearance-trigger" type="button" data-appearance-open aria-expanded="false" '
-        f'aria-label="外观设置" title="外观设置">{icons["palette"]}</button>'
-        '<div class="appearance-panel" data-appearance-panel hidden role="group" aria-label="外观设置">'
+        f'aria-label="{esc(_t("appearance.title"))}" title="{esc(_t("appearance.title"))}">{icons["palette"]}</button>'
+        f'<div class="appearance-panel" data-appearance-panel hidden role="group" '
+        f'aria-label="{esc(_t("appearance.title"))}">'
         '<div class="appearance-group">'
-        '<span class="appearance-label">主题</span>'
-        '<div class="seg" role="radiogroup" aria-label="主题模式">'
+        f'<span class="appearance-label" data-i18n="appearance.theme">{esc(_t("appearance.theme"))}</span>'
+        f'<div class="seg" role="radiogroup" aria-label="{esc(_t("appearance.themeAria"))}">'
         '<button class="seg__btn" type="button" role="radio" aria-checked="true" '
-        'data-appearance-mode="auto">跟随系统</button>'
+        f'data-appearance-mode="auto" data-i18n="appearance.auto">{esc(_t("appearance.auto"))}</button>'
         '<button class="seg__btn" type="button" role="radio" aria-checked="false" '
-        'data-appearance-mode="light">浅色</button>'
+        f'data-appearance-mode="light" data-i18n="appearance.light">{esc(_t("appearance.light"))}</button>'
         '<button class="seg__btn" type="button" role="radio" aria-checked="false" '
-        'data-appearance-mode="dark">深色</button>'
+        f'data-appearance-mode="dark" data-i18n="appearance.dark">{esc(_t("appearance.dark"))}</button>'
         "</div>"
         "</div>"
         '<div class="appearance-group">'
-        '<span class="appearance-label">强调色</span>'
-        f'<div class="swatches" role="radiogroup" aria-label="强调色">{checks}</div>'
+        f'<span class="appearance-label" data-i18n="appearance.accent">{esc(_t("appearance.accent"))}</span>'
+        f'<div class="swatches" role="radiogroup" aria-label="{esc(_t("appearance.accentAria"))}">{checks}</div>'
         "</div>"
-        '<p class="appearance-hint">设置仅保存在本机浏览器，不影响其他访客。</p>'
+        f'<p class="appearance-hint" data-i18n="appearance.hint">{esc(_t("appearance.hint"))}</p>'
         "</div>"
+        "</div>"
+    )
+
+
+def render_language(lang: str = "zh-CN") -> str:
+    """语言切换：一个一键切换的按钮 + 面板里的显式两选项。
+
+    静态站点不做「每语言一套页面」，所以这里是**界面级**切换：
+    文案由 assets/i18n.js 就地替换，偏好记在 localStorage，
+    也接受 ``?lang=en`` 这种可分享的入口。
+    """
+    options = "".join(
+        f'<button class="seg__btn" type="button" role="radio" '
+        f'aria-checked="{"true" if code == normalize_lang(lang) else "false"}" '
+        f'data-lang-set="{code}" title="{esc(LANG_ENDONYMS[code])}" '
+        f'lang="{code}">{esc(LANG_ENDONYMS[code])}</button>'
+        for code in LANGS
+    )
+    return (
+        '<div class="lang" data-lang>'
+        f'<button class="lang-trigger" type="button" data-lang-toggle aria-expanded="false" '
+        f'data-i18n-attr="aria-label:nav.switchLang,title:nav.switchLang" '
+        f'aria-label="{esc(T("nav.switchLang", lang))}" title="{esc(T("nav.switchLang", lang))}">'
+        # 按钮上显示**当前**语言（面板里才是两个选项），点开才选
+        f'<span data-lang-label>{esc(LANG_LABELS.get(normalize_lang(lang), "中"))}</span></button>'
+        f'<div class="lang-panel" data-lang-panel hidden role="radiogroup" '
+        f'aria-label="{esc(T("nav.language", lang))}">{options}</div>'
         "</div>"
     )
 
@@ -198,6 +267,22 @@ def render_appearance() -> str:
 def _is_http(url) -> bool:
     text = str(url or "").lower()
     return text.startswith("http://") or text.startswith("https://")
+
+
+def i18n_config_attr(values: dict, fallback: str = "") -> str:
+    """把「来自 site.config.json 的多语言文案」写成 ``data-i18n-config`` 属性。
+
+    导航标签、页脚说明这类内容不该塞进内置字典（它们是站点配置，不是界面文案），
+    但又得跟着语言切换走。做法是构建时把各语言版本序列化成 JSON 放进属性，
+    由 ``assets/i18n.js`` 的 ``apply()`` 按当前语言挑一个。
+
+    只有一种语言可用时返回空串 —— 没有可选的东西，就没必要多写一段 DOM。
+    """
+    clean = {code: str(text).strip() for code, text in (values or {}).items() if str(text or "").strip()}
+    if len(clean) < 2:
+        return ""
+    payload = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+    return f' data-i18n-config="{esc(payload)}"'
 
 
 def render_social(social=None) -> str:
@@ -235,6 +320,90 @@ def build_favicon(config: dict) -> str:
     return "data:image/svg+xml," + quote(svg, safe="")
 
 
+def breadcrumb_nav(items, root: str = "", extra: str = "") -> str:
+    """统一的面包屑。
+
+    ``items`` 是 ``[(label, url_or_None), ...]``：url 为 None 表示当前页（不可点）。
+    第一项通常是「首页」，由调用方给出，这样首页自己不会出现多余的一层面包屑。
+    ``extra`` 用于在末尾追加不可点的补充节点（例如归档的「第 2 页」）。
+
+    元组可以带第三个元素（i18n key）：带上就输出 ``data-i18n``，
+    界面语言切换时这一层也会跟着变（站点名、标签名这类内容本身不带 key）。
+    """
+    parts = ['<nav class="breadcrumb" aria-label="面包屑" data-i18n-attr="aria-label:a11y.breadcrumb">']
+    for index, item in enumerate(items):
+        label, url = item[0], item[1]
+        key = item[2] if len(item) > 2 else None
+        i18n_attr = f' data-i18n="{esc(key)}"' if key else ""
+        if index > 0:
+            parts.append('<span class="breadcrumb__sep">/</span>')
+        if url:
+            parts.append(f'<a href="{root}{esc(url)}"{i18n_attr}>{esc(label)}</a>')
+        else:
+            parts.append(f'<span aria-current="page"{i18n_attr}>{esc(label)}</span>')
+    if extra:
+        parts.append(extra)
+    parts.append("</nav>")
+    return "".join(parts)
+
+
+def breadcrumb_json_ld(items, config: dict):
+    """面包屑的结构化数据（R3 的一部分：让搜索结果能显示层级路径）。
+
+    ``items`` 与 ``breadcrumb_nav`` 同构，但 url=None 的当前页会被跳过 ——
+    BreadcrumbList 里最后一层通常是当前页，可给可不给，这里给。返回
+    JSON-LD 字符串（含 ``<script>`` 标签），无配置 url 时返回空串。
+    """
+    site_url = str(config.get("url") or "").rstrip("/")
+    if not items:
+        return ""
+    elements = []
+    for index, item in enumerate(items, start=1):
+        label, url = item[0], item[1]
+        entry = {"@type": "ListItem", "position": index, "name": label}
+        if url:
+            entry["item"] = f"{site_url}/{url.lstrip('/')}" if site_url else url
+        elif site_url:
+            entry["item"] = site_url
+        elements.append(entry)
+    payload = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": elements,
+    }
+    return (
+        '<script type="application/ld+json">'
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "</script>"
+    )
+
+
+def lazy_img(src: str, alt: str = "", *, root: str = "", cls: str = "", eager: bool = False,
+             width: str = "", height: str = "") -> str:
+    """统一的图片标签：默认 ``loading="lazy" decoding="async"``。
+
+    ``eager=True`` 用于首屏图（hero / 文章头图）—— 那些图懒加载反而会闪一下。
+    ``src`` 是相对站点根的路径（如 ``assets/x.png``）或绝对 URL；
+    相对路径会拼上 ``root``，这样在 ``posts/`` 这样的子目录里也指得对。
+    """
+    if not src:
+        return ""
+    url = src if _is_http(src) else f"{root}{src.lstrip('/')}"
+    attrs = [
+        f'src="{esc(url)}"',
+        f'alt="{esc(alt)}"',
+        'decoding="async"',
+    ]
+    if not eager:
+        attrs.append('loading="lazy"')
+    if width:
+        attrs.append(f'width="{esc(width)}"')
+    if height:
+        attrs.append(f'height="{esc(height)}"')
+    klass = f' class="{esc(cls)}"' if cls else ""
+    return f"<img {' '.join(attrs)}{klass}>"
+
+
 def layout(
     *,
     config: dict,
@@ -252,15 +421,19 @@ def layout(
     scripts: list | None = None,
     og_type: str = "website",
     og_image: str = "",
+    breadcrumbs: list | None = None,
 ) -> str:
     """渲染完整页面。
 
-    cloud    —— 是否接入云端（注入 cloud-config.js / SDK / cloud.js，并在顶栏放登录态插槽）
-    vendor   —— 需要额外加载的 CDN 库，取值 "marked" / "highlight"
-    scripts  —— 该页专属的本地脚本文件名（assets/ 下的相对名，按顺序注入）
-    og_type  —— Open Graph 类型（列表页 website，文章详情 article）
-    og_image —— 分享缩略图。留空时用站点默认图；文章页传 cover 字段
+    cloud       —— 是否接入云端（注入 cloud-config.js / SDK / cloud.js，并在顶栏放登录态插槽）
+    vendor      —— 需要额外加载的库，取值 "marked" / "highlight" / "katex" / "mermaid"
+                   （名字在 cloud.config.json 的 vendor 映射里解析成路径）
+    scripts     —— 该页专属的本地脚本文件名（assets/ 下的相对名，按顺序注入）
+    og_type     —— Open Graph 类型（列表页 website，文章详情 article）
+    og_image    —— 分享缩略图。留空时用站点默认图；文章页传 cover 字段
+    breadcrumbs —— [(label, url_or_None), ...]，非空时输出 BreadcrumbList 结构化数据
     """
+    lang = normalize_lang(config.get("lang"))
     site_title = config.get("title") or "Blog"
     page_title = f"{title} · {site_title}" if title and title != site_title else site_title
     desc = description or config.get("description") or ""
@@ -285,14 +458,23 @@ def layout(
         )
 
     # ---------- 导航 ----------
+    # nav 项支持可选的 en 字段：界面切到英文时用英文标签（没有就回落中文）。
+    # 两种语言都写进 data-i18n-config，这样客户端切语言时能就地换掉，
+    # 而不必刷新页面（服务端渲染的那一版只保证「没有 JS 时也对」）。
     nav_parts, mobile_nav_parts = [], []
     for item in config.get("nav") or []:
         active = bool(current) and item.get("url") == current
         aria = ' aria-current="page"' if active else ""
         item_url = esc(item.get("url"))
-        item_label = esc(item.get("label"))
-        nav_parts.append(f'<a class="nav__link" href="{root}{item_url}"{aria}>{item_label}</a>')
-        mobile_nav_parts.append(f'<a href="{root}{item_url}"{aria}>{item_label}</a>')
+        label = item.get("label")
+        if lang == "en" and item.get("en"):
+            label = item.get("en")
+        item_label = esc(label)
+        alt = i18n_config_attr({"zh-CN": item.get("label"), "en": item.get("en")}, label)
+        nav_parts.append(
+            f'<a class="nav__link" href="{root}{item_url}"{aria}{alt}>{item_label}</a>'
+        )
+        mobile_nav_parts.append(f'<a href="{root}{item_url}"{aria}{alt}>{item_label}</a>')
     nav_html = "".join(nav_parts)
     mobile_nav_html = "".join(mobile_nav_parts)
 
@@ -310,7 +492,11 @@ def layout(
 
     footer = config.get("footer") or {}
     author = esc(config.get("author") or site_title)
-    footer_note = f' · {esc(footer.get("note"))}' if footer.get("note") else ""
+    note_text = footer.get("note") or ""
+    note_en = footer.get("noteEn") or footer.get("note_en") or ""
+    # 页脚说明同样来自配置：中英两版都可用时挂 data-i18n-config，随语言切换。
+    note_attr = i18n_config_attr({"zh-CN": note_text, "en": note_en}, note_text)
+    footer_note = f' · <span{note_attr}>{esc(note_text)}</span>' if note_text else ""
     icp_block = f'<div>{esc(footer.get("icp"))}</div>' if footer.get("icp") else ""
     social_html = render_social(config.get("social") or [])
 
@@ -320,7 +506,30 @@ def layout(
     theme_boot = THEME_BOOT
     csp_meta = CSP_META
     mirror_script = render_mirror_redirect(config)
-    appearance_html = render_appearance()
+    appearance_html = render_appearance(lang)
+    language_html = render_language(lang)
+    i18n_boot = I18N_BOOT
+    i18n_guard = I18N_GUARD_CSS
+
+    # 面包屑结构化数据（R3）：可见的面包屑由各页面自己画，这里只补 <head>
+    crumb_ld = breadcrumb_json_ld(breadcrumbs or [], config)
+    if crumb_ld:
+        extra_head = f"{extra_head}\n{crumb_ld}" if extra_head else crumb_ld
+
+    # hreflang：界面语言是客户端切换的，所以两种语言指向同一个 URL 的不同查询参数。
+    # 这样英文读者拿到的分享链接能直接以英文界面打开，也不至于让爬虫把中文正文
+    # 当成英文页面（x-default 指向默认语言）。
+    hreflang_meta = ""
+    if url:
+        hreflang_meta = "\n".join(
+            [
+                f'<link rel="alternate" hreflang="{code}" href="{esc(url)}'
+                + (f'?lang={code}' if code != lang else "")
+                + '">'
+                for code in LANGS
+            ]
+            + [f'<link rel="alternate" hreflang="x-default" href="{esc(url)}">']
+        )
 
     # ---------- 顶栏登录态 ----------
     # 先渲染一个静态兜底链接：即使云端 SDK 拉取失败，访客也总能找到登录入口。
@@ -329,7 +538,7 @@ def layout(
         auth_slot = (
             '<div class="auth-slot" data-auth-slot>'
             f'<a class="auth-btn" href="{root}login.html">'
-            '<span class="auth-btn__dot"></span>登录 / 注册</a>'
+            f'<span class="auth-btn__dot"></span><span data-i18n="auth.login">{esc(T("auth.login", lang))}</span></a>'
             "</div>"
         )
         # 通知铃铛：登录后由 notify.js 渲染（未登录时保持隐藏）
@@ -349,12 +558,22 @@ def layout(
     script_tags = []
     # 外观设置要尽早绑定（含首屏状态同步），放在第一个
     script_tags.append(f'<script src="{root}assets/theme.js" defer></script>')
+    # 界面文案切换：放在主题之后、其它脚本之前，这样切换按钮与各种文案
+    # 都能在被业务脚本渲染前就位（业务脚本会通过 window.WSBlogI18n 取文案）
+    script_tags.append(f'<script src="{root}assets/i18n.js" defer></script>')
+    # 第三方库的地址表：math.js 要用它按需拉 KaTeX / Mermaid，
+    # 而 math.js 是在 IIFE 开头就把 window.__VENDOR__ 取走的，
+    # 所以这张表必须排在 math.js 前面（defer 按文档顺序执行）。
+    script_tags.append(f'<script src="{root}assets/vendor-map.js" defer></script>')
     if cloud:
         script_tags.append(f'<script src="{root}assets/cloud-config.js" defer></script>')
-        for name in vendor or []:
-            url = vendor_url(name)
-            if url:
-                script_tags.append(f'<script src="{_vendor_src(url)}" defer></script>')
+    # vendor 里既有云端用的（marked / highlight / sdk），也有与云端无关的
+    # 排版库（katex / mermaid）—— 所以这一层不再限定在 cloud 分支里
+    for name in vendor or []:
+        url = vendor_url(name)
+        if url:
+            script_tags.append(f'<script src="{_vendor_src(url)}" defer></script>')
+    if cloud:
         sdk = vendor_url("sdk")
         if sdk:
             script_tags.append(f'<script src="{_vendor_src(sdk)}" defer></script>')
@@ -366,7 +585,7 @@ def layout(
     scripts_html = "\n".join(script_tags)
 
     return f"""<!DOCTYPE html>
-<html lang="{esc(config.get("lang") or "zh-CN")}" data-root="{root}">
+<html lang="{esc(lang)}" data-lang-default="{esc(lang)}" data-root="{root}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -380,6 +599,7 @@ def layout(
 <meta name="theme-color" content="#0a0c11">
 <meta name="generator" content="WS Blog (static generator)">
 {theme_boot}
+{i18n_boot}
 {canonical_meta}
 <meta property="og:type" content="{esc(og_type)}">
 <meta property="og:site_name" content="{esc(site_title)}">
@@ -387,6 +607,7 @@ def layout(
 <meta property="og:description" content="{esc(desc)}">
 <meta property="og:locale" content="zh_CN">
 {og_url_meta}
+{hreflang_meta}
 {image_meta}
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{esc(page_title)}">
@@ -398,11 +619,12 @@ def layout(
 <!-- 字体已在 assets/main.css 里以本地 @font-face 声明，不再请求 Google Fonts
      （fonts.googleapis.com / fonts.gstatic.com 在大陆不可达且阻塞渲染） -->
 <link rel="stylesheet" href="{root}assets/main.css">
+{i18n_guard}
 {extra_head}
 <script>window.__ROOT__={json.dumps(root)};</script>
 </head>
 <body{body_attr}>
-<a class="skip-link" href="#main" style="position:absolute;left:-9999px">跳到主要内容</a>
+<a class="skip-link" href="#main" data-i18n="a11y.skip" style="position:absolute;left:-9999px">{esc(T("a11y.skip", lang))}</a>
 {progress_html}
 
 <header class="site-header">
@@ -411,21 +633,25 @@ def layout(
       <span class="brand__mark">{brand_initial}</span>
       <span class="brand__text">{esc(site_title)}</span>
     </a>
-    <nav class="nav" aria-label="主导航">{nav_html}</nav>
+    <nav class="nav" aria-label="{esc(T("a11y.mainNav", lang))}" data-i18n-attr="aria-label:a11y.mainNav">{nav_html}</nav>
     <span class="header__spacer"></span>
     <div class="header__actions">
-      <button class="search-trigger" type="button" data-search-open aria-label="搜索站内内容">
-        {icons["search"]}<span>搜索</span><kbd>Ctrl K</kbd>
+      <button class="search-trigger" type="button" data-search-open
+              data-i18n-attr="aria-label:nav.searchAria"
+              aria-label="{esc(T("nav.searchAria", lang))}">
+        {icons["search"]}<span data-i18n="nav.search">{esc(T("nav.search", lang))}</span><kbd>Ctrl K</kbd>
       </button>
+      {language_html}
       {appearance_html}
       {notify_slot}
       {auth_slot}
       {social_html}
-      <button class="nav-toggle" type="button" data-nav-toggle aria-label="展开菜单" aria-expanded="false">{icons["menu"]}</button>
+      <button class="nav-toggle" type="button" data-nav-toggle data-i18n-attr="aria-label:a11y.menu"
+              aria-label="{esc(T("a11y.menu", lang))}" aria-expanded="false">{icons["menu"]}</button>
     </div>
   </div>
 </header>
-<nav class="mobile-nav" data-mobile-nav aria-label="移动端导航">{mobile_nav_html}</nav>
+<nav class="mobile-nav" data-mobile-nav aria-label="{esc(T("a11y.mobileNav", lang))}" data-i18n-attr="aria-label:a11y.mobileNav">{mobile_nav_html}</nav>
 
 <main id="main">
 {content}
@@ -441,17 +667,26 @@ def layout(
   </div>
 </footer>
 
-<button class="to-top" type="button" data-to-top aria-label="回到顶部">{icons["up"]}</button>
+<button class="to-top" type="button" data-to-top data-i18n-attr="aria-label:a11y.toTop"
+        aria-label="{esc(T("a11y.toTop", lang))}">{icons["up"]}</button>
 
-<div class="search-overlay" data-search-overlay role="dialog" aria-modal="true" aria-label="站内搜索">
+<div class="search-overlay" data-search-overlay role="dialog" aria-modal="true"
+     aria-label="{esc(T("search.title", lang))}" data-i18n-attr="aria-label:search.title">
   <div class="search-panel">
     <div class="search-panel__field">
       {icons["search"]}
-      <input class="search-panel__input" type="search" placeholder="搜索文章、项目、标签…" data-search-input autocomplete="off" spellcheck="false">
+      <input class="search-panel__input" type="search" data-search-input autocomplete="off" spellcheck="false"
+             placeholder="{esc(T("search.placeholder", lang))}"
+             data-i18n-attr="placeholder:search.placeholder">
       <span class="search-panel__esc">ESC</span>
     </div>
     <div class="search-results" data-search-results></div>
-    <div class="search-hint"><span>↑↓ 选择</span><span>↵ 打开</span><span>ESC 关闭</span></div>
+    <div class="search-hint">
+      <span data-i18n="search.hintSelect">{esc(T("search.hintSelect", lang))}</span>
+      <span data-i18n="search.hintOpen">{esc(T("search.hintOpen", lang))}</span>
+      <span data-i18n="search.hintClose">{esc(T("search.hintClose", lang))}</span>
+      <a class="search-hint__link" href="{root}shortcuts.html" data-i18n="search.tipKeys">{esc(T("search.tipKeys", lang))}</a>
+    </div>
   </div>
 </div>
 

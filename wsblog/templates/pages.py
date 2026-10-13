@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import json
 from urllib.parse import quote
 
+from ..i18n import T, normalize_lang
 from ..util import escape_html as esc, parse_date, slugify
-from .layout import icons
+from .layout import breadcrumb_nav, i18n_config_attr, icons, lazy_img
 
 __all__ = [
     "home_page",
@@ -21,6 +23,10 @@ __all__ = [
     "about_page",
     "tags_page",
     "tag_page",
+    "series_index_page",
+    "series_page",
+    "shortcuts_page",
+    "subscribe_page",
     "login_page",
     "account_page",
     "admin_page",
@@ -30,6 +36,21 @@ __all__ = [
 ]
 
 _WEEKDAYS_CN = ("周日", "周一", "周二", "周三", "周四", "周五", "周六")
+_WEEKDAYS_EN = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+_MONTHS_EN = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def _lang(config: dict) -> str:
+    """页面的默认渲染语言（取自 site.config.json 的 lang）。"""
+    return normalize_lang((config or {}).get("lang"))
+
+
+def _crumb_home(config: dict):
+    """首页那一层的面包屑条目（(标签, 链接, i18n key)）。"""
+    return (T("common.home", _lang(config)), "index.html", "common.home")
 
 
 def _is_http(url) -> bool:
@@ -48,13 +69,16 @@ def _short_date(value) -> str:
     return f"{local.year}-{local.month:02d}-{local.day:02d}"
 
 
-def _full_date(value) -> str:
+def _full_date(value, lang: str | None = None) -> str:
+    """文章头部那种完整日期。中文 ``2026 年 10 月 8 日 · 周四``，英文 ``October 8, 2026 · Thursday``。"""
     parsed = parse_date(value)
     if parsed is None:
         return ""
     local = parsed.astimezone()
-    weekday = _WEEKDAYS_CN[(local.weekday() + 1) % 7]
-    return f"{local.year} 年 {local.month} 月 {local.day} 日 · {weekday}"
+    index = (local.weekday() + 1) % 7
+    if normalize_lang(lang) == "en":
+        return f"{_MONTHS_EN[local.month - 1]} {local.day}, {local.year} · {_WEEKDAYS_EN[index]}"
+    return f"{local.year} 年 {local.month} 月 {local.day} 日 · {_WEEKDAYS_CN[index]}"
 
 
 def _tag_chips(tags, root: str, linked: bool = True) -> str:
@@ -113,6 +137,33 @@ def share_block(*, label: str = "分享这篇") -> str:
 </div>"""
 
 
+def _metrics(post: dict, lang: str) -> str:
+    """列表卡片上的互动数（V15）：阅读 / 点赞 / 评论。
+
+    三个数字都为 0 时整块不输出 —— 零阅读零点赞的「数据展示」只是噪声。
+    数字由构建期烘焙（见 wsblog/cloudstats.py），没有 JS 也能看到，
+    对爬虫也是可读的社交证明。
+    """
+    views = int(post.get("views") or 0)
+    likes = int(post.get("likes") or 0)
+    comments = int(post.get("comment_count") or 0)
+    if not (views or likes or comments):
+        return ""
+    parts = []
+    for key, value, label_key in (
+        ("views", views, "list.metricViews"),
+        ("likes", likes, "list.metricLikes"),
+        ("comments", comments, "list.metricComments"),
+    ):
+        if value:
+            parts.append(
+                f'<span class="metrics__item" data-metric="{key}">'
+                f'<span class="metrics__value">{value}</span>'
+                f'<span class="metrics__label" data-i18n="{label_key}">{esc(T(label_key, lang))}</span></span>'
+            )
+    return f'<span class="metrics">{"".join(parts)}</span>'
+
+
 def _post_item(post: dict, root: str, config: dict) -> str:
     """文章列表项。
 
@@ -121,18 +172,27 @@ def _post_item(post: dict, root: str, config: dict) -> str:
     HTML 不允许 <a> 嵌套，嵌套会让解析器拆散外层锚点、破坏布局。
     """
     options = config.get("options") or {}
+    lang = _lang(config)
     show_reading = options.get("showReadingTime", True) is not False
-    reading = f"<span>{post['reading_time']} 分钟</span>" if show_reading else ""
-    pinned = '<span class="pinned-flag">置顶</span> ' if post.get("pinned") else ""
+    reading = (
+        f'<span>{post["reading_time"]} <span data-i18n="common.minutes">{esc(T("common.minutes", lang))}</span></span>'
+        if show_reading
+        else ""
+    )
+    pinned = (
+        f'<span class="pinned-flag" data-i18n="common.pinned">{esc(T("common.pinned", lang))}</span> '
+        if post.get("pinned")
+        else ""
+    )
     tags_attr = " ".join(slugify(tag) for tag in post["tags"])
 
-    return f"""<li class="post-item" data-tags="{esc(tags_attr)}">
+    return f"""<li class="post-item" data-tags="{esc(tags_attr)}" data-hot="{int(post.get('hot') or 0)}">
   <div class="post-item__link">
     <div class="post-item__date">{_short_date(post["date"])}{reading}</div>
     <div class="post-item__main">
       <h3 class="post-item__title"><a class="stretch-link" href="{root}{post["url"]}">{pinned}{esc(post["title"])}</a></h3>
       <p class="post-item__summary">{esc(post["summary"])}</p>
-      <div class="post-item__meta">{_tag_chips(post["tags"], root)}</div>
+      <div class="post-item__meta">{_tag_chips(post["tags"], root)}{_metrics(post, lang)}</div>
     </div>
   </div>
 </li>"""
@@ -186,9 +246,17 @@ def home_page(
     tags: list,
     root: str = "",
     total_posts: int | None = None,
+    activity: dict | None = None,
+    series: list | None = None,
 ) -> str:
-    """首页。posts 是按「首页展示条数」截断后的列表，total_posts 是文章总数。"""
+    """首页。posts 是按「首页展示条数」截断后的列表，total_posts 是文章总数。
+
+    ``activity``（V6 站点动态）形如 ``{"comments": [...], "posts": [...]}``：
+    这两块数据来自构建期拉取的 ``comments_public``（只含可见评论），
+    拉不到就整块不渲染 —— 空的「最近评论」比没有更难看。
+    """
     hero = config.get("hero") or {}
+    lang = _lang(config)
     total_count = total_posts if total_posts is not None else len(posts)
 
     # 统计数字支持 auto: 前缀，从实际内容里取
@@ -220,7 +288,7 @@ def home_page(
     actions = "".join(action_parts)
 
     filter_parts = [
-        '<button class="chip is-active" type="button" data-filter="all">全部'
+        f'<button class="chip is-active" type="button" data-filter="all" data-i18n="common.all">{esc(T("common.all", lang))}'
         f'<span class="chip__count">{total_count}</span></button>'
     ]
     for tag in tags[:8]:
@@ -241,18 +309,95 @@ def home_page(
     hidden_count = max(0, total_count - len(posts))
     more_block = (
         f'<div class="list-more"><a class="btn btn--ghost" href="{root}archive.html">'
-        f"查看全部 {total_count} 篇文章 →</a></div>"
+        f'<span data-i18n="home.viewAll">{esc(T("home.viewAll", lang))}</span> {total_count} →</a>'
+        f'<a class="btn btn--ghost" href="{root}archive.html?sort=hot" data-sort-link="hot">'
+        f'<span data-i18n="list.sortHot">{esc(T("list.sortHot", lang))}</span> →</a></div>'
         if hidden_count > 0
         else ""
     )
+
+    # ---------- 站点动态（V6） ----------
+    # 「最近评论」需要构建期拉到可见评论才渲染；「最近更新」用文章自身时间，
+    # 两块任意一块有内容就出整个 section。
+    activity_rows = []
+    for comment in (activity or {}).get("comments") or []:
+        author = esc(comment.get("author") or "读者")
+        excerpt = esc(comment.get("excerpt") or "")
+        link = esc(comment.get("url") or "#")
+        activity_rows.append(
+            f'<li class="activity__item"><div class="activity__meta">'
+            f'<span class="activity__author">{author}</span>'
+            f'<span class="activity__date">{_short_date(comment.get("date"))}</span></div>'
+            f'<a class="activity__excerpt" href="{root}{link}">{excerpt}</a></li>'
+        )
+    recent_updates = (activity or {}).get("updated") or []
+    update_rows = [
+        f'<li class="activity__item"><div class="activity__meta">'
+        f'<span class="activity__date">{_short_date(post.get("updated") or post["date"])}</span></div>'
+        f'<a class="activity__excerpt" href="{root}{post["url"]}">{esc(post["title"])}</a></li>'
+        for post in recent_updates
+    ]
+    activity_block = ""
+    if activity_rows or update_rows:
+        comments_col = (
+            f'<div class="activity__col">'
+            f'<h3 class="activity__title" data-i18n="home.activityComments">{esc(T("home.activityComments", lang))}</h3>'
+            f'<ul class="activity__list">{"".join(activity_rows)}</ul></div>'
+            if activity_rows
+            else ""
+        )
+        updates_col = (
+            f'<div class="activity__col">'
+            f'<h3 class="activity__title" data-i18n="home.activityPosts">{esc(T("home.activityPosts", lang))}</h3>'
+            f'<ul class="activity__list">{"".join(update_rows)}</ul></div>'
+            if update_rows
+            else ""
+        )
+        activity_block = f"""<section class="wrap section" id="activity">
+  <div class="section__head">
+    <h2 class="section__title" data-i18n="home.activity">{esc(T("home.activity", lang))}</h2>
+  </div>
+  <div class="activity">{comments_col}{updates_col}</div>
+</section>"""
+
+    # ---------- 系列（V7） ----------
+    series_block = ""
+    if series:
+        chips = "".join(
+            f'<a class="series-chip" href="{root}series/{esc(item["slug"])}.html">'
+            f'<span class="series-chip__name">{esc(item["name"])}</span>'
+            f'<span class="series-chip__count">{esc(T("series.count", lang, n=item["count"]))}</span></a>'
+            for item in series[:6]
+        )
+        series_block = f"""<section class="wrap section" id="series">
+  <div class="section__head">
+    <h2 class="section__title" data-i18n="series.title">{esc(T("series.title", lang))}</h2>
+    <a class="section__more" href="{root}series.html"><span data-i18n="home.viewAll">{esc(T("home.viewAll", lang))}</span> →</a>
+  </div>
+  <div class="series-row">{chips}</div>
+</section>"""
+
+    # ---------- 订阅引导（V11 入口） ----------
+    subscribe_block = f"""<section class="wrap section" id="subscribe-cta">
+  <div class="cta">
+    <div>
+      <h2 class="cta__title" data-i18n="home.subscribe">{esc(T("home.subscribe", lang))}</h2>
+      <p class="cta__desc" data-i18n="home.subscribeHint">{esc(T("home.subscribeHint", lang))}</p>
+    </div>
+    <div class="cta__actions">
+      <a class="btn btn--primary" href="{root}subscribe.html" data-i18n="home.subscribe">{esc(T("home.subscribe", lang))}</a>
+      <a class="btn btn--ghost" href="{root}feed.xml">{icons["rss"]}<span>RSS</span></a>
+    </div>
+  </div>
+</section>"""
 
     featured_projects = projects[:3]
     if featured_projects:
         grid = "".join(_project_card(project, root) for project in featured_projects)
         projects_block = f"""<section class="wrap section" id="projects">
   <div class="section__head">
-    <h2 class="section__title">项目作品</h2>
-    <a class="section__more" href="{root}projects.html">全部项目 →</a>
+    <h2 class="section__title" data-i18n="home.projects">{esc(T("home.projects", lang))}</h2>
+    <a class="section__more" href="{root}projects.html"><span data-i18n="home.viewAllProjects">{esc(T("home.viewAllProjects", lang))}</span> →</a>
   </div>
   <div class="project-grid">{grid}</div>
 </section>"""
@@ -273,21 +418,27 @@ def home_page(
 
 <section class="wrap section" id="posts">
   <div class="section__head">
-    <h2 class="section__title">最新文章</h2>
-    <a class="section__more" href="{root}archive.html">全部 {total_count} 篇 →</a>
+    <h2 class="section__title" data-i18n="home.latest">{esc(T("home.latest", lang))}</h2>
+    <a class="section__more" href="{root}archive.html"><span data-i18n="home.viewAll">{esc(T("home.viewAll", lang))}</span> {total_count} →</a>
   </div>
   <div class="toolbar">
-    <span class="toolbar__label">Filter</span>
+    <span class="toolbar__label" data-i18n="home.filter">{esc(T("home.filter", lang))}</span>
     <div class="chip-row" data-filter-row>{filter_chips}</div>
   </div>
   <ul class="post-list" data-post-list>
     {post_list}
   </ul>
-  <div class="empty-state" data-empty-state hidden>没有匹配这个标签的文章。</div>
+  <div class="empty-state" data-empty-state hidden data-i18n="home.empty">{esc(T("home.empty", lang))}</div>
   {more_block}
 </section>
 
+{activity_block}
+
+{series_block}
+
 {projects_block}
+
+{subscribe_block}
 """
 
 
@@ -304,18 +455,23 @@ def page_url(base: str, page: int) -> str:
     return f"{stem}-{page}.html"
 
 
-def pagination(*, base: str, page: int, total_pages: int, root: str = "") -> str:
+def pagination(*, base: str, page: int, total_pages: int, root: str = "", lang: str | None = None) -> str:
     """上一页 / 页码 / 下一页。单页时不渲染。"""
     if total_pages <= 1:
         return ""
 
+    lang = lang or _lang(None)
+    prev_text = f'← {esc(T("pagination.prev", lang))}'
+    next_text = f'{esc(T("pagination.next", lang))} →'
+    nav_label = esc(T("pagination.nav", lang))
+
     parts = []
     if page > 1:
         parts.append(
-            f'<a class="pagination__link" rel="prev" href="{root}{page_url(base, page - 1)}">← 上一页</a>'
+            f'<a class="pagination__link" rel="prev" href="{root}{page_url(base, page - 1)}">{prev_text}</a>'
         )
     else:
-        parts.append('<span class="pagination__link is-disabled">← 上一页</span>')
+        parts.append(f'<span class="pagination__link is-disabled">{prev_text}</span>')
 
     numbers: list = []
     for n in range(1, total_pages + 1):
@@ -336,12 +492,12 @@ def pagination(*, base: str, page: int, total_pages: int, root: str = "") -> str
 
     if page < total_pages:
         parts.append(
-            f'<a class="pagination__link" rel="next" href="{root}{page_url(base, page + 1)}">下一页 →</a>'
+            f'<a class="pagination__link" rel="next" href="{root}{page_url(base, page + 1)}">{next_text}</a>'
         )
     else:
-        parts.append('<span class="pagination__link is-disabled">下一页 →</span>')
+        parts.append(f'<span class="pagination__link is-disabled">{next_text}</span>')
 
-    return f'<nav class="pagination" aria-label="分页导航">{"".join(parts)}</nav>'
+    return f'<nav class="pagination" aria-label="{nav_label}">{"".join(parts)}</nav>'
 
 
 def paginate(items: list, per_page: int) -> tuple[list[list], int]:
@@ -355,6 +511,7 @@ def paginate(items: list, per_page: int) -> tuple[list[list], int]:
 # ---------- 文章详情 ----------
 
 def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, root: str = "../", interact_slug: str = "", author: dict | None = None) -> str:
+    lang = _lang(config)
     options = config.get("options") or {}
     show_toc = options.get("showToc", True) is not False and len(post["toc"]) > 2
 
@@ -365,7 +522,7 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, r
             for heading in post["toc"]
         )
         toc_html = f"""<aside class="toc" data-toc>
-  <div class="toc__title">On this page</div>
+  <div class="toc__title" data-i18n="post.toc">{T("post.toc", lang)}</div>
   <ul class="toc__list">
     {toc_items}
   </ul>
@@ -377,24 +534,41 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, r
     if prev_post:
         nav_parts.append(
             f'<a class="post-nav__item" href="{root}{prev_post["url"]}">'
-            '<span class="post-nav__label">← 上一篇</span>'
+            f'<span class="post-nav__label" data-i18n="post.prev">← {T("post.prev", lang)}</span>'
             f'<span class="post-nav__title">{esc(prev_post["title"])}</span></a>'
         )
     if next_post:
         nav_parts.append(
             f'<a class="post-nav__item post-nav__item--next" href="{root}{next_post["url"]}">'
-            '<span class="post-nav__label">下一篇 →</span>'
+            f'<span class="post-nav__label" data-i18n="post.next">{T("post.next", lang)} →</span>'
             f'<span class="post-nav__title">{esc(next_post["title"])}</span></a>'
         )
     nav_html = f'<div class="post-nav">\n  {"".join(nav_parts)}\n</div>' if nav_parts else ""
     related_html = related_posts_block(posts=related, root=root) if related else ""
 
-    updated_html = (
-        f'<span class="meta-dot"></span><span class="meta-text">更新于 {_short_date(post["updated"])}</span>'
-        if post.get("updated")
-        else ""
-    )
+    if post.get("updated"):
+        _updated_text = T("post.updated", lang, date=_short_date(post["updated"]))
+        _updated_args = json.dumps({"date": _short_date(post["updated"])}, ensure_ascii=False)
+        updated_html = (
+            f'<span class="meta-dot"></span>'
+            f'<span class="meta-text" data-i18n="post.updated" data-i18n-args="{esc(_updated_args)}">'
+            f'{_updated_text}</span>'
+        )
+    else:
+        updated_html = ""
     summary_html = f'<p class="article-head__summary">{esc(post["summary"])}</p>' if post.get("summary") else ""
+
+    # V7：本文属于某个系列时给一条指回系列页的线索（静态文章与云端文章共用）。
+    _series_name = str(post.get("series") or "").strip()
+    if _series_name:
+        series_html = (
+            f'<p class="article-head__series" data-series>'
+            f'<span class="article-head__series-label" data-i18n="series.of">{T("series.of", lang)}</span>'
+            f'<a class="article-head__series-link" href="{root}series/{slugify(_series_name)}.html">'
+            f'{esc(_series_name)}</a></p>'
+        )
+    else:
+        series_html = ""
 
     # 署名：只对「有公开主页的云端作者」出现（静态文章的作者就是站长本人，
     # 全站页脚已经写了，重复署名反而啰嗦）
@@ -410,24 +584,35 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, r
     else:
         author_html = ""
 
+    # 日期同时写两版（data-i18n-config），切语言时无需刷新即可换格式；
+    # 用 <time datetime> 让机器可读的部分保持 ISO 不变。
+    iso_date = _short_date(post["date"])
+    date_attr = i18n_config_attr(
+        {"zh-CN": _full_date(post["date"], "zh-CN"), "en": _full_date(post["date"], "en")},
+        _full_date(post["date"], lang),
+    )
+    date_html = (
+        f'<time class="meta-text" datetime="{iso_date}"{date_attr}>'
+        f'{esc(_full_date(post["date"], lang))}</time>'
+    )
+
     return f"""<div class="wrap">
   <div class="page-head">
-    <nav class="breadcrumb" aria-label="面包屑">
-      <a href="{root}index.html">首页</a>
-      <span class="breadcrumb__sep">/</span>
-      <span>文章</span>
-    </nav>
+    {breadcrumb_nav([_crumb_home(config), (T("posts.title", lang), None, "posts.title")], root)}
     <header class="article-head">
-      <span class="eyebrow">{esc(post["tags"][0] if post["tags"] else "技术笔记")}</span>
+      <span class="eyebrow">{esc(post["tags"][0] if post["tags"] else T("post.eyebrowDefault", lang))}</span>
       <h1 class="article-head__title">{esc(post["title"])}</h1>
       <div class="article-head__meta">
-        {author_html}<span class="meta-text">{_full_date(post["date"])}</span>
+        {author_html}{date_html}
         <span class="meta-dot"></span>
-        <span class="meta-text">{post["reading_time"]} 分钟阅读</span>
+        <span class="meta-text" data-i18n="post.reading" data-i18n-args="{post["reading_time"]}">
+          {T("post.reading", lang, n=post["reading_time"])}</span>
         <span class="meta-dot"></span>
-        <span class="meta-text">{post["words"]} 字</span>
+        <span class="meta-text" data-i18n="post.words" data-i18n-args="{post["words"]}">
+          {T("post.words", lang, n=post["words"])}</span>
         {updated_html}
       </div>
+      {series_html}
       {summary_html}
     </header>
   </div>
@@ -437,43 +622,47 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, r
   </div>
   <footer class="article-foot">
     <div class="chip-row">{_tag_chips(post["tags"], root)}</div>
-    {share_block()}
+    {share_block(label=T("post.share", lang))}
     {nav_html}
     {related_html}
   </footer>
-  {post_interact_block(post_slug=(interact_slug or post["slug"]), post_title=post["title"], root=root, login_next=post["url"])}
+  {post_interact_block(post_slug=(interact_slug or post["slug"]), post_title=post["title"], root=root, login_next=post["url"], lang=lang)}
 </div>"""
 
 
 # ---------- 项目列表 ----------
 
 def projects_page(*, config: dict, projects: list, root: str = "") -> str:
+    lang = _lang(config)
     has_featured = any(project["featured"] for project in projects)
     featured_list = [p for p in projects if p["featured"]] if has_featured else []
     normal_list = [p for p in projects if not p["featured"]] if has_featured else projects
 
     if featured_list:
         featured_block = f"""<section class="section" style="margin-top:44px">
-    <div class="section__head"><h2 class="section__title">精选</h2></div>
+    <div class="section__head"><h2 class="section__title" data-i18n="projects.featured">{esc(T("projects.featured", lang))}</h2></div>
     <div class="project-grid">{"".join(_project_card(p, root) for p in featured_list)}</div>
   </section>"""
     else:
         featured_block = ""
 
     normal_head = (
-        '<div class="section__head"><h2 class="section__title">全部项目</h2></div>' if featured_list else ""
+        f'<div class="section__head"><h2 class="section__title" data-i18n="projects.all">{esc(T("projects.all", lang))}</h2></div>'
+        if featured_list
+        else ""
     )
     if normal_list:
         normal_body = f'<div class="project-grid">{"".join(_project_card(p, root) for p in normal_list)}</div>'
     else:
-        normal_body = '<div class="empty-state">还没有项目，去 content/projects/ 里新建一个 .md 文件吧。</div>'
+        normal_body = f'<div class="empty-state" data-i18n="projects.emptyHint">{esc(T("projects.emptyHint", lang))}</div>'
     normal_top = "56px" if featured_list else "44px"
 
     return f"""<div class="wrap">
   <div class="page-head">
+    {breadcrumb_nav([_crumb_home(config), (T("projects.title", lang), None, "projects.title")], root=root)}
     <span class="eyebrow">Projects</span>
-    <h1 class="article-head__title" style="margin-top:14px">项目作品</h1>
-    <p class="article-head__summary" style="margin-top:18px">{len(projects)} 个已归档的项目。每个都附了源码或在线演示的入口，欢迎交流。</p>
+    <h1 class="article-head__title" style="margin-top:14px" data-i18n="home.projects">{esc(T("home.projects", lang))}</h1>
+    <p class="article-head__summary" style="margin-top:18px" data-i18n="projects.lead" data-i18n-args="{len(projects)}">{esc(T("projects.lead", lang, n=len(projects)))}</p>
   </div>
   {featured_block}
   <section class="section" style="margin-top:{normal_top}">
@@ -530,12 +719,13 @@ def project_detail_page(*, config: dict, project: dict, root: str = "../") -> st
 # ---------- 关于页 ----------
 
 def about_page(*, config: dict, page, root: str = "") -> str:
+    lang = _lang(config)
     about = config.get("about") or {}
     initial = esc(str(config.get("author") or config.get("title") or "A").strip()[:1].upper())
 
     if about.get("skills"):
         skills = f"""<section class="section">
-  <div class="section__head"><h2 class="section__title">技能栈</h2></div>
+  <div class="section__head"><h2 class="section__title" data-i18n="about.skills">{esc(T("about.skills", lang))}</h2></div>
   <div class="skill-list">{"".join(f'<span class="skill-item">{esc(s)}</span>' for s in about["skills"])}</div>
 </section>"""
     else:
@@ -549,7 +739,7 @@ def about_page(*, config: dict, page, root: str = "") -> str:
             for t in about["timeline"]
         )
         timeline = f"""<section class="section">
-  <div class="section__head"><h2 class="section__title">经历</h2></div>
+  <div class="section__head"><h2 class="section__title" data-i18n="about.timeline">{esc(T("about.timeline", lang))}</h2></div>
   <ul class="timeline">{items}</ul>
 </section>"""
     else:
@@ -564,15 +754,23 @@ def about_page(*, config: dict, page, root: str = "") -> str:
         )
     social = "".join(social_parts)
     social_block = (
-        '<section class="section"><div class="section__head"><h2 class="section__title">找到我</h2></div>'
+        f'<section class="section"><div class="section__head">'
+        f'<h2 class="section__title" data-i18n="about.findMe">{esc(T("about.findMe", lang))}</h2></div>'
         f'<div class="hero__actions" style="margin-top:0">{social}</div></section>'
         if social
         else ""
     )
 
-    page_html = page["html"] if page else "<p>还没有写自我介绍。编辑 <code>content/pages/about.md</code> 即可。</p>"
+    page_html = (
+        page["html"]
+        if page
+        else f'<p data-i18n="about.empty">{esc(T("about.empty", lang))}</p>'
+    )
 
     return f"""<div class="wrap">
+  <div class="page-head">
+    {breadcrumb_nav([_crumb_home(config), (T("about.title", lang), None, "about.title")], root=root)}
+  </div>
   <div class="about-hero">
     <div>
       <span class="eyebrow">About</span>
@@ -592,18 +790,22 @@ def about_page(*, config: dict, page, root: str = "") -> str:
 # ---------- 标签总览 ----------
 
 def tags_page(*, config: dict, tags: list, posts: list, root: str = "") -> str:
+    lang = _lang(config)
     cloud = "".join(
         f'<a class="tag-card" href="{root}tags/{tag["slug"]}.html"><span>{esc(tag["name"])}</span>'
         f'<span class="tag-card__count">{tag["count"]}</span></a>'
         for tag in tags
     )
-    body = cloud or '<div class="empty-state">还没有标签。</div>'
+    body = cloud or f'<div class="empty-state" data-i18n="tags.empty">{esc(T("tags.empty", lang))}</div>'
+    summary = T("tags.summaryCount", lang, n=len(tags), m=len(posts))
 
     return f"""<div class="wrap">
   <div class="page-head">
+    {breadcrumb_nav([_crumb_home(config), (T("tags.title", lang), None, "tags.title")], root=root)}
     <span class="eyebrow">Tags</span>
-    <h1 class="article-head__title" style="margin-top:14px">标签</h1>
-    <p class="article-head__summary" style="margin-top:18px">共 {len(tags)} 个标签，覆盖 {len(posts)} 篇文章。</p>
+    <h1 class="article-head__title" style="margin-top:14px" data-i18n="tags.title">{esc(T("tags.title", lang))}</h1>
+    <p class="article-head__summary" style="margin-top:18px"
+       data-i18n="tags.summaryCount" data-i18n-args='{{"n":{len(tags)},"m":{len(posts)}}}'>{esc(summary)}</p>
   </div>
   <section class="section">
     <div class="tag-cloud">{body}</div>
@@ -612,20 +814,20 @@ def tags_page(*, config: dict, tags: list, posts: list, root: str = "") -> str:
 
 
 def tag_page(*, config: dict, tag: dict, posts: list, root: str = "../../") -> str:
+    lang = _lang(config)
     post_list = "\n    ".join(_post_item(post, root, config) for post in posts)
+    summary = T("tag.summary", lang, n=len(posts))
 
     return f"""<div class="wrap">
   <div class="page-head">
-    <nav class="breadcrumb" aria-label="面包屑">
-      <a href="{root}index.html">首页</a>
-      <span class="breadcrumb__sep">/</span>
-      <a href="{root}tags.html">标签</a>
-      <span class="breadcrumb__sep">/</span>
-      <span>{esc(tag["name"])}</span>
-    </nav>
+    {breadcrumb_nav(
+        [_crumb_home(config), (T("tags.title", lang), "tags.html", "tags.title"), (str(tag["name"]), None)],
+        root=root,
+    )}
     <span class="eyebrow">Tag</span>
     <h1 class="article-head__title" style="margin-top:14px">{esc(tag["name"])}</h1>
-    <p class="article-head__summary" style="margin-top:18px">该标签下共 {len(posts)} 篇文章。</p>
+    <p class="article-head__summary" style="margin-top:18px"
+       data-i18n="tag.summary" data-i18n-args="{len(posts)}">{esc(summary)}</p>
   </div>
   <section class="section" style="margin-top:44px">
     <ul class="post-list">{post_list}</ul>
@@ -710,73 +912,144 @@ def archive_page(
     page: int = 1,
     total_pages: int = 1,
     total: int | None = None,
+    feed: list | None = None,
+    page_size: int = 0,
 ) -> str:
-    """归档页：按年分组的时间轴列表。支持分页（archive.html / archive-2.html …）。"""
+    """归档页：按年分组的时间轴列表。支持分页（archive.html / archive-2.html …）。
+
+    关于 V2（热门排序）与 V3（加载更多）：这两个交互都**需要跨页数据**，
+    而静态站点翻页是「多份 HTML」，所以第 1 页会额外内联一份精简的全量
+    清单（``<script type="application/json" data-archive-feed>``）。
+    浏览器端 ``app.js`` 拿它做排序与增量显示；没有 JS 时这份数据没人读，
+    访客看到的就是服务端渲染好的分页 —— 两边都能用，且首屏是服务端渲染的。
+    """
+    lang = _lang(config)
     years: dict[str, list] = {}
     for post in posts:
         local = post["date"].astimezone()
         years.setdefault(str(local.year), []).append(post)
     year_names = sorted(years, reverse=True)
 
+    def _metrics_inline(post: dict) -> str:
+        views = int(post.get("views") or 0)
+        likes = int(post.get("likes") or 0)
+        comments = int(post.get("comment_count") or 0)
+        bits = []
+        if views:
+            bits.append(f'{views} <span data-i18n="list.metricViews">{esc(T("list.metricViews", lang))}</span>')
+        if likes:
+            bits.append(f'{likes} <span data-i18n="list.metricLikes">{esc(T("list.metricLikes", lang))}</span>')
+        if comments:
+            bits.append(f'{comments} <span data-i18n="list.metricComments">{esc(T("list.metricComments", lang))}</span>')
+        return " · ".join(bits)
+
     year_blocks = []
     for year in year_names:
         items = "\n    ".join(
-            f'<a class="archive-item" href="{root}{post["url"]}">'
+            f'<a class="archive-item" href="{root}{post["url"]}" data-hot="{int(post.get("hot") or 0)}">'
             f'<span class="archive-item__date">{_short_date(post["date"])}</span>'
             f'<span class="archive-item__title">{esc(post["title"])}</span>'
-            f'<span class="archive-item__read">{post.get("reading_time", "")} 分钟</span></a>'
+            f'<span class="archive-item__read">{post.get("reading_time", "")} '
+            f'<span data-i18n="common.minutes">{esc(T("common.minutes", lang))}</span></span>'
+            f'<span class="archive-item__metrics">{_metrics_inline(post)}</span></a>'
             for post in years[year]
         )
         year_blocks.append(
             f'<section class="archive-year">\n'
-            f'  <h2 class="archive-year__title">{esc(year)} <span>{len(years[year])} 篇</span></h2>\n'
+            f'  <h2 class="archive-year__title">{esc(year)} '
+            f'<span data-i18n="archive.postsCount" data-i18n-args="{len(years[year])}">'
+            f'{esc(T("archive.postsCount", lang, n=len(years[year])))}</span></h2>\n'
             f'  <div class="archive-list">\n    {items}\n  </div>\n'
             f"</section>"
         )
-    body = "\n".join(year_blocks) or '<div class="empty-state">还没有文章。</div>'
+    body = "\n".join(year_blocks) or f'<div class="empty-state" data-i18n="archive.empty">{esc(T("archive.empty", lang))}</div>'
     total_count = total if total is not None else len(posts)
 
     page_note = (
-        f'<span class="breadcrumb__sep">/</span><span>第 {page} 页</span>' if page > 1 else ""
+        f'<span class="breadcrumb__sep">/</span><span>{esc(T("archive.page", lang, n=page))}</span>'
+        if page > 1
+        else ""
     )
-    summary = f"共 {total_count} 篇文章，按发布时间归档。"
     if total_pages > 1:
-        summary += f" 当前第 {page} / {total_pages} 页。"
+        summary = T("archive.summaryPaged", lang, total=total_count, page=page, pages=total_pages)
+    else:
+        summary = T("archive.summary", lang, total=total_count)
+
+    # 第 1 页内联全量清单（供客户端排序 / 加载更多）。第 2 页起不再重复。
+    # 调用方传进来的 feed 已经是完整字典 {pageSize,total,items}；
+    # 这里做一次归一化，同时兼容「只传 items 列表」的用法，
+    # 避免出现 items 里再套一层 {pageSize,total,items} 的双层结构。
+    if isinstance(feed, dict):
+        feed_items = list(feed.get("items") or [])
+        feed_payload = feed
+    else:
+        feed_items = list(feed or [])
+        feed_payload = {
+            "pageSize": page_size or len(feed_items),
+            "total": total_count,
+            "items": feed_items,
+        }
+
+    feed_script = ""
+    if feed_items and page == 1:
+        feed_script = (
+            '<script type="application/json" data-archive-feed>'
+            + json.dumps(feed_payload, ensure_ascii=False, separators=(",", ":"))
+            + "</script>"
+        )
+
+    toolbar = ""
+    if feed_items and page == 1 and len(feed_items) > 1:
+        toolbar = f"""<div class="toolbar toolbar--archive" data-archive-toolbar>
+    <span class="toolbar__label" data-i18n="list.sort">{esc(T("list.sort", lang))}</span>
+    <div class="seg" role="radiogroup" aria-label="{esc(T("list.sort", lang))}">
+      <button class="seg__btn is-active" type="button" role="radio" aria-checked="true" data-sort="latest"
+              data-i18n="list.sortLatest">{esc(T("list.sortLatest", lang))}</button>
+      <button class="seg__btn" type="button" role="radio" aria-checked="false" data-sort="hot"
+              data-i18n="list.sortHot" data-i18n-attr="title:list.sortHotTitle"
+              title="{esc(T("list.sortHotTitle", lang))}">{esc(T("list.sortHot", lang))}</button>
+    </div>
+  </div>"""
 
     return f"""<div class="wrap">
   <div class="page-head">
-    <nav class="breadcrumb" aria-label="面包屑">
-      <a href="{root}index.html">首页</a>
-      <span class="breadcrumb__sep">/</span>
-      <a href="{root}archive.html">归档</a>
-      {page_note}
-    </nav>
+    {breadcrumb_nav([_crumb_home(config), (T("archive.title", lang), None, "archive.title")], root=root, extra=page_note)}
     <span class="eyebrow">Archive</span>
-    <h1 class="article-head__title" style="margin-top:14px">归档</h1>
-    <p class="article-head__summary" style="margin-top:18px">{summary}</p>
+    <h1 class="article-head__title" style="margin-top:14px" data-i18n="archive.title">{esc(T("archive.title", lang))}</h1>
+    <p class="article-head__summary" style="margin-top:18px">{esc(summary)}</p>
   </div>
-  <div class="archive">{body}</div>
-  {pagination(base="archive.html", page=page, total_pages=total_pages, root=root)}
+  {toolbar}
+  <div class="archive" data-archive-list>{body}</div>
+  <p class="list-note" data-load-more-note hidden data-i18n="list.loadedAll">{esc(T("list.loadedAll", lang))}</p>
+  <div class="list-more">
+    <button class="btn btn--ghost" type="button" data-load-more hidden data-i18n="list.loadMore">{esc(T("list.loadMore", lang))}</button>
+  </div>
+  {pagination(base="archive.html", page=page, total_pages=total_pages, root=root, lang=lang)}
+  {feed_script}
 </div>"""
 
 
 def offline_page(*, config: dict, root: str = "") -> str:
     """离线兜底页：Service Worker 在断网且无缓存时展示。"""
+    lang = _lang(config)
     return f"""<div class="wrap" style="padding:110px 0;text-align:center">
   <div class="mono" style="font-size:4.2rem;font-weight:700;line-height:1;background:linear-gradient(120deg,var(--accent),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent">OFFLINE</div>
-  <h1 style="font-size:1.3rem;margin:20px 0 10px">当前没有网络连接</h1>
-  <p style="color:var(--text-dim);font-size:.92rem;margin:0 auto 30px;max-width:460px">
-    这个页面还没有被缓存。恢复网络后刷新即可；已浏览过的页面在离线状态下仍然可以打开。
+  <h1 style="font-size:1.3rem;margin:20px 0 10px" data-i18n="offline.title">{esc(T("offline.title", lang))}</h1>
+  <p style="color:var(--text-dim);font-size:.92rem;margin:0 auto 30px;max-width:460px" data-i18n="offline.lead">
+    {esc(T("offline.lead", lang))}
   </p>
-  <a class="btn btn--primary" href="{root}index.html">重试首页</a>
+  <a class="btn btn--primary" href="{root}index.html" data-i18n="offline.retry">{esc(T("offline.retry", lang))}</a>
 </div>"""
 
 
-def not_found_page(*, root: str = "", posts: list | None = None, tags: list | None = None) -> str:
+def not_found_page(
+    *, config: dict | None = None, root: str = "", posts: list | None = None, tags: list | None = None
+) -> str:
     """404：给访客留出路 —— 搜索、最新文章、热门标签。
 
     传统站点的 404 都会做「补救导航」，否则访客从搜索引擎落到一个死链后只能离开。
     """
+    lang = _lang(config)
     posts = posts or []
     tags = tags or []
     latest = posts[:6]
@@ -793,8 +1066,8 @@ def not_found_page(*, root: str = "", posts: list | None = None, tags: list | No
     )
     latest_block = (
         f"""<section class="section" style="margin-top:56px">
-    <div class="section__head"><h2 class="section__title">最新文章</h2>
-      <a class="section__more" href="{root}archive.html">全部文章 →</a></div>
+    <div class="section__head"><h2 class="section__title" data-i18n="notFound.latest">{esc(T("notFound.latest", lang))}</h2>
+      <a class="section__more" href="{root}archive.html" data-i18n="common.all">{esc(T("common.all", lang))} →</a></div>
     <ul class="post-list">
       {latest_items}
     </ul>
@@ -810,8 +1083,8 @@ def not_found_page(*, root: str = "", posts: list | None = None, tags: list | No
     )
     tags_block = (
         f"""<section class="section" style="margin-top:44px">
-    <div class="section__head"><h2 class="section__title">按标签找</h2>
-      <a class="section__more" href="{root}tags.html">全部标签 →</a></div>
+    <div class="section__head"><h2 class="section__title" data-i18n="notFound.hotTags">{esc(T("notFound.hotTags", lang))}</h2>
+      <a class="section__more" href="{root}tags.html" data-i18n="tags.title">{esc(T("tags.title", lang))} →</a></div>
     <div class="chip-row">{tag_chips}</div>
   </section>"""
         if tag_chips
@@ -821,11 +1094,11 @@ def not_found_page(*, root: str = "", posts: list | None = None, tags: list | No
     return f"""<div class="wrap not-found">
   <div class="not-found__head">
     <div class="not-found__code mono">404</div>
-    <h1 class="not-found__title">这个页面不存在</h1>
-    <p class="not-found__desc">链接可能已经失效，或者内容被移动了。试试搜索，或者从下面继续浏览。</p>
+    <h1 class="not-found__title" data-i18n="notFound.title">{esc(T("notFound.title", lang))}</h1>
+    <p class="not-found__desc" data-i18n="notFound.lead">{esc(T("notFound.lead", lang))}</p>
     <div class="hero__actions">
-      <button class="btn btn--primary" type="button" data-search-open>搜索站内内容</button>
-      <a class="btn btn--ghost" href="{root}index.html">返回首页</a>
+      <button class="btn btn--primary" type="button" data-search-open data-i18n="notFound.search">{esc(T("notFound.search", lang))}</button>
+      <a class="btn btn--ghost" href="{root}index.html" data-i18n="notFound.backHome">{esc(T("notFound.backHome", lang))}</a>
     </div>
   </div>
   {latest_block}
@@ -870,44 +1143,52 @@ _LOGIN_ICONS = {
 }
 
 
-def post_interact_block(*, post_slug: str, post_title: str, root: str = "../", login_next: str = "") -> str:
+def post_interact_block(
+    *,
+    post_slug: str,
+    post_title: str,
+    root: str = "../",
+    login_next: str = "",
+    lang: str | None = None,
+) -> str:
     """文章页的点赞 / 收藏 / 评论区。
 
     ``data-post-slug`` 写在容器上，interact.js 启动时直接读取并初始化。
     """
+    lang = normalize_lang(lang)
     target = login_next or post_slug
     login_href = f'{root}login.html?next={quote("/" + target, safe="/")}'
 
     return f"""<section class="interact" data-interact data-post-slug="{esc(post_slug)}" data-post-title="{esc(post_title)}">
   <div class="interact__bar">
     <button class="interact__btn" type="button" data-like aria-pressed="false">
-      {_LOGIN_ICONS["heart"]}<span>点赞</span><span class="interact__count" data-like-count>0</span>
+      {_LOGIN_ICONS["heart"]}<span data-i18n="interact.like">{esc(T("interact.like", lang))}</span><span class="interact__count" data-like-count>0</span>
     </button>
     <button class="interact__btn" type="button" data-bookmark aria-pressed="false">
-      {_LOGIN_ICONS["bookmark"]}<span data-bookmark-label>收藏</span>
+      {_LOGIN_ICONS["bookmark"]}<span data-bookmark-label data-i18n="interact.bookmark">{esc(T("interact.bookmark", lang))}</span>
     </button>
     <span class="interact__views">
-      {_LOGIN_ICONS["eye"]}<span data-views-count>0</span> 次阅读
+      {_LOGIN_ICONS["eye"]}<span data-views-count>0</span> <span data-i18n="interact.views">{esc(T("interact.views", lang))}</span>
     </span>
   </div>
   <div class="comments">
     <div class="comments__head">
-      <h2 class="comments__title">{_LOGIN_ICONS["comment"]}<span>评论</span></h2>
-      <span class="comments__count"><span data-comment-count>0</span> 条</span>
+      <h2 class="comments__title">{_LOGIN_ICONS["comment"]}<span data-i18n="interact.comments">{esc(T("interact.comments", lang))}</span></h2>
+      <span class="comments__count"><span data-comment-count>0</span> <span data-i18n="interact.count">{esc(T("interact.count", lang))}</span></span>
     </div>
     <div class="comment-gate" data-comment-gate>
-      <p>登录后可以参与讨论。</p>
-      <a class="btn btn--primary btn--sm" href="{login_href}">登录 / 注册</a>
+      <p data-i18n="interact.gate">{esc(T("interact.gate", lang))}</p>
+      <a class="btn btn--primary btn--sm" href="{login_href}" data-i18n="auth.login">{esc(T("auth.login", lang))}</a>
     </div>
     <form class="comment-form" data-comment-form hidden>
       <div class="comment-form__target" data-reply-bar hidden>
-        正在回复 <strong data-reply-name></strong>
-        <button class="comment-form__cancel" type="button" data-reply-cancel>取消</button>
+        <span data-i18n="interact.replying">{esc(T("interact.replying", lang))}</span> <strong data-reply-name></strong>
+        <button class="comment-form__cancel" type="button" data-reply-cancel data-i18n="interact.cancel">{esc(T("interact.cancel", lang))}</button>
       </div>
-      <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
+      <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="{esc(T("interact.placeholder", lang))}" data-i18n-attr="placeholder:interact.placeholder"></textarea>
       <div class="comment-form__foot">
-        <span class="comment-form__hint">最多 1000 字 · 提交后需站长审核才公开</span>
-        <button class="btn btn--primary btn--sm" type="submit" data-comment-submit>发表评论</button>
+        <span class="comment-form__hint" data-i18n="interact.hint">{esc(T("interact.hint", lang))}</span>
+        <button class="btn btn--primary btn--sm" type="submit" data-comment-submit data-i18n="interact.submit">{esc(T("interact.submit", lang))}</button>
       </div>
     </form>
     <ul class="comment-list" data-comment-list></ul>
@@ -922,59 +1203,67 @@ def login_page(*, config: dict, root: str = "") -> str:
     DOM 上的 data-* 契约由 ``src/scripts/auth.js`` 使用，改动需同步。
     """
     site_title = esc(config.get("title") or "Blog")
+    lang = _lang(config)
+
+    def L(key: str) -> str:
+        return esc(T(key, lang))
+
+    def A(attr: str, key: str) -> str:
+        """把属性也接进 i18n（如 placeholder）：切语言时由 i18n.js 一并替换。"""
+        return f'{attr}="{L(key)}" data-i18n-attr="{attr}:{key}"'
+
     return f"""<div class="wrap auth-page">
   <div class="auth-card">
     <aside class="auth-card__aside">
       <span class="eyebrow">Account</span>
-      <h2 class="auth-aside__title">一个入口，<br>权限自动生效</h2>
-      <p class="auth-aside__text">
-        所有人用同一个入口登录：填邮箱和密码就行，没有账号的话首次登录会自动创建。
-        能做什么由账号本身决定，不需要提前选入口。
+      <h2 class="auth-aside__title" data-i18n="auth.asideTitle">{L("auth.asideTitle")}</h2>
+      <p class="auth-aside__text" data-i18n="auth.asideText">
+        {L("auth.asideText")}
       </p>
       <ul class="auth-aside__list">
-        <li>{_LOGIN_ICONS["user"]}<div><strong>普通账号</strong><span>评论 · 点赞 · 收藏 · 个人资料</span></div></li>
-        <li>{_LOGIN_ICONS["shield"]}<div><strong>管理员账号</strong><span>登录后可自选：以普通用户浏览，或进入后台</span></div></li>
+        <li>{_LOGIN_ICONS["user"]}<div><strong data-i18n="auth.roleUser">{L("auth.roleUser")}</strong><span data-i18n="auth.roleUserDesc">{L("auth.roleUserDesc")}</span></div></li>
+        <li>{_LOGIN_ICONS["shield"]}<div><strong data-i18n="auth.roleAdmin">{L("auth.roleAdmin")}</strong><span data-i18n="auth.roleAdminDesc">{L("auth.roleAdminDesc")}</span></div></li>
       </ul>
-      <p class="auth-aside__foot">管理员由邮箱白名单认定，登录后才会出现身份选择。</p>
+      <p class="auth-aside__foot" data-i18n="auth.asideFoot">{L("auth.asideFoot")}</p>
     </aside>
 
     <div class="auth-card__main">
       <div data-auth-form-wrap>
-        <h1 class="auth-card__title" data-auth-title>登录 / 注册</h1>
-        <p class="auth-card__lead" data-auth-lead>邮箱 + 密码登录；没有账号的话，首次登录会自动创建。</p>
+        <h1 class="auth-card__title" data-auth-title data-i18n="auth.title">{L("auth.title")}</h1>
+        <p class="auth-card__lead" data-auth-lead data-i18n="auth.cardLead">{L("auth.cardLead")}</p>
 
         <form class="auth-form" data-auth-form novalidate>
           <label class="field">
-            <span class="field__label">邮箱</span>
-            <input class="field__input" type="email" name="email" placeholder="you@example.com"
+            <span class="field__label" data-i18n="auth.email">{L("auth.email")}</span>
+            <input class="field__input" type="email" name="email" {A("placeholder", "auth.emailPlaceholder")}
                    autocomplete="email" spellcheck="false" required>
           </label>
 
-          <div class="auth-tabs" role="tablist" aria-label="登录方式">
-            <button class="auth-tab is-active" type="button" role="tab" aria-selected="true" data-tab="password">密码登录</button>
-            <button class="auth-tab" type="button" role="tab" aria-selected="false" data-tab="otp">邮箱验证码</button>
+          <div class="auth-tabs" role="tablist" aria-label="{L("auth.method")}" data-i18n-attr="aria-label:auth.method">
+            <button class="auth-tab is-active" type="button" role="tab" aria-selected="true" data-tab="password" data-i18n="auth.tabPassword">{L("auth.tabPassword")}</button>
+            <button class="auth-tab" type="button" role="tab" aria-selected="false" data-tab="otp" data-i18n="auth.tabCode">{L("auth.tabCode")}</button>
           </div>
 
           <div class="auth-panel" data-panel="password">
             <label class="field">
-              <span class="field__label">密码</span>
-              <input class="field__input" type="password" name="password" placeholder="输入密码"
+              <span class="field__label" data-i18n="auth.password">{L("auth.password")}</span>
+              <input class="field__input" type="password" name="password" {A("placeholder", "auth.passwordPlaceholder")}
                      autocomplete="current-password">
             </label>
           </div>
 
           <div class="auth-panel" data-panel="otp" hidden>
             <label class="field">
-              <span class="field__label">验证码</span>
+              <span class="field__label" data-i18n="auth.code">{L("auth.code")}</span>
               <div class="field__row">
-                <input class="field__input" type="text" name="code" inputmode="numeric" placeholder="6 位验证码"
+                <input class="field__input" type="text" name="code" inputmode="numeric" {A("placeholder", "auth.codePlaceholder")}
                        autocomplete="one-time-code">
-                <button class="btn btn--ghost btn--sm" type="button" data-send-code>获取验证码</button>
+                <button class="btn btn--ghost btn--sm" type="button" data-send-code data-i18n="auth.getCode">{L("auth.getCode")}</button>
               </div>
             </label>
             <label class="field">
-              <span class="field__label">设置密码（仅新用户需要）</span>
-              <input class="field__input" type="password" name="signupPassword" placeholder="新账号首次登录请设置密码"
+              <span class="field__label" data-i18n="auth.signupPasswordLabel">{L("auth.signupPasswordLabel")}</span>
+              <input class="field__input" type="password" name="signupPassword" {A("placeholder", "auth.newPasswordPlaceholder")}
                      autocomplete="new-password">
             </label>
           </div>
@@ -982,55 +1271,55 @@ def login_page(*, config: dict, root: str = "") -> str:
           <div class="auth-error" data-auth-error hidden></div>
           <div class="auth-notice" data-auth-notice hidden></div>
 
-          <button class="btn btn--primary btn--block" type="submit" data-auth-submit>登录</button>
+          <button class="btn btn--primary btn--block" type="submit" data-auth-submit data-i18n="auth.submitPassword">{L("auth.submitPassword")}</button>
         </form>
 
         <p class="auth-foot">
-          登录即表示你同意本站以最小必要范围保存账号信息。
-          <button class="link-btn" type="button" data-auth-forgot>忘记密码？</button>
+          <span data-i18n="auth.privacy">{L("auth.privacy")}</span>
+          <button class="link-btn" type="button" data-auth-forgot data-i18n="auth.forgot">{L("auth.forgot")}</button>
         </p>
       </div>
 
       <div data-reset-wrap hidden>
-        <h1 class="auth-card__title">重置密码</h1>
-        <p class="auth-card__lead">填写注册邮箱获取验证码，验证通过后直接设置新密码并登录。</p>
+        <h1 class="auth-card__title" data-i18n="auth.resetTitle">{L("auth.resetTitle")}</h1>
+        <p class="auth-card__lead" data-i18n="auth.resetLead">{L("auth.resetLead")}</p>
 
         <form class="auth-form" data-reset-form novalidate>
           <label class="field">
-            <span class="field__label">邮箱</span>
-            <input class="field__input" type="email" name="resetEmail" placeholder="you@example.com"
+            <span class="field__label" data-i18n="auth.email">{L("auth.email")}</span>
+            <input class="field__input" type="email" name="resetEmail" {A("placeholder", "auth.emailPlaceholder")}
                    autocomplete="email" spellcheck="false" required>
           </label>
 
           <label class="field">
-            <span class="field__label">验证码</span>
+            <span class="field__label" data-i18n="auth.code">{L("auth.code")}</span>
             <div class="field__row">
               <input class="field__input" type="text" name="resetCode" inputmode="numeric"
-                     placeholder="邮件里的验证码" autocomplete="one-time-code">
-              <button class="btn btn--ghost btn--sm" type="button" data-reset-send>获取验证码</button>
+                     {A("placeholder", "auth.resetCodePlaceholder")} autocomplete="one-time-code">
+              <button class="btn btn--ghost btn--sm" type="button" data-reset-send data-i18n="auth.getCode">{L("auth.getCode")}</button>
             </div>
           </label>
 
           <label class="field">
-            <span class="field__label">新密码</span>
-            <input class="field__input" type="password" name="resetPassword" placeholder="至少 6 位"
+            <span class="field__label" data-i18n="auth.resetNewLabel">{L("auth.resetNewLabel")}</span>
+            <input class="field__input" type="password" name="resetPassword" {A("placeholder", "auth.resetNew")}
                    autocomplete="new-password">
           </label>
 
           <label class="field">
-            <span class="field__label">确认新密码</span>
-            <input class="field__input" type="password" name="resetPassword2" placeholder="再输入一次"
+            <span class="field__label" data-i18n="auth.resetConfirmLabel">{L("auth.resetConfirmLabel")}</span>
+            <input class="field__input" type="password" name="resetPassword2" {A("placeholder", "auth.resetRepeat")}
                    autocomplete="new-password">
           </label>
 
           <div class="auth-error" data-reset-error hidden></div>
           <div class="auth-notice" data-reset-notice hidden></div>
 
-          <button class="btn btn--primary btn--block" type="submit" data-reset-submit>重置密码并登录</button>
+          <button class="btn btn--primary btn--block" type="submit" data-reset-submit data-i18n="auth.resetSubmitFull">{L("auth.resetSubmitFull")}</button>
         </form>
 
         <p class="auth-foot">
-          <button class="link-btn" type="button" data-reset-back>← 返回登录</button>
+          <button class="link-btn" type="button" data-reset-back data-i18n="auth.backToLogin">← {L("auth.backToLogin")}</button>
         </p>
       </div>
 
@@ -1623,43 +1912,195 @@ def admin_page(*, config: dict, root: str = "") -> str:
 
 # ---------- 在线文章（云端）----------
 
+# ---------- 系列（V7） ----------
+
+def series_index_page(*, config: dict, series: list, root: str = "") -> str:
+    """系列总览：所有系列 + 每个系列的文章数。"""
+    lang = _lang(config)
+    cards = "".join(
+        f'<a class="series-card" href="{root}series/{esc(item["slug"])}.html">'
+        f'<span class="series-card__name">{esc(item["name"])}</span>'
+        f'<span class="series-card__meta">{esc(T("series.count", lang, n=item["count"]))}'
+        f' · {_short_date(item["latest"])}</span></a>'
+        for item in series
+    )
+    body = cards or f'<div class="empty-state" data-i18n="series.empty">{esc(T("series.empty", lang))}</div>'
+
+    return f"""<div class="wrap">
+  <div class="page-head">
+    {breadcrumb_nav([_crumb_home(config), (T("series.title", lang), None, "series.title")], root=root)}
+    <span class="eyebrow">Series</span>
+    <h1 class="article-head__title" style="margin-top:14px" data-i18n="series.title">{esc(T("series.title", lang))}</h1>
+    <p class="article-head__summary" style="margin-top:18px" data-i18n="series.summary">{esc(T("series.summary", lang))}</p>
+  </div>
+  <section class="section">
+    <div class="series-grid">{body}</div>
+  </section>
+</div>"""
+
+
+def series_page(*, config: dict, item: dict, root: str = "../") -> str:
+    """单个系列：按发布时间**升序**列出（连载要能顺着读）。"""
+    lang = _lang(config)
+    steps = []
+    for index, post in enumerate(item["posts"], start=1):
+        steps.append(
+            f'<li class="series-step">'
+            f'<span class="series-step__index" aria-hidden="true">{index}</span>'
+            f'<div class="series-step__body">'
+            f'<div class="series-step__date">{_short_date(post["date"])}'
+            f' · {post.get("reading_time", "")} <span data-i18n="common.minutes">{esc(T("common.minutes", lang))}</span></div>'
+            f'<h3 class="series-step__title"><a class="stretch-link" href="{root}{post["url"]}">{esc(post["title"])}</a></h3>'
+            f'<p class="series-step__summary">{esc(post["summary"])}</p>'
+            f"</div></li>"
+        )
+
+    return f"""<div class="wrap">
+  <div class="page-head">
+    {breadcrumb_nav(
+        [_crumb_home(config), (T("series.title", lang), "series.html", "series.title"), (str(item["name"]), None)],
+        root=root,
+    )}
+    <span class="eyebrow">Series</span>
+    <h1 class="article-head__title" style="margin-top:14px">{esc(item["name"])}</h1>
+    <p class="article-head__summary" style="margin-top:18px">{esc(T("series.summary", lang))}
+      <span class="series-page__count">{esc(T("series.count", lang, n=item["count"]))}</span></p>
+  </div>
+  <section class="section">
+    <ol class="series-steps">{"".join(steps)}</ol>
+  </section>
+</div>"""
+
+
+# ---------- 快捷键（V17） ----------
+
+def shortcuts_page(*, config: dict, root: str = "") -> str:
+    """快捷键说明页：把这些键位从「藏起来的用法」变成可发现的文档。"""
+    lang = _lang(config)
+
+    def _row(keys, key_id: str) -> str:
+        kbd = "".join(f"<kbd>{esc(key)}</kbd>" for key in keys)
+        return f'<div class="shortcut-row"><div class="shortcut-row__keys">{kbd}</div>' \
+               f'<div class="shortcut-row__label" data-i18n="{key_id}">{esc(T(key_id, lang))}</div></div>'
+
+    rows = "".join(
+        [
+            _row(["/"], "shortcuts.open"),
+            _row(["Ctrl", "K"], "shortcuts.openAlt"),
+            _row(["?"], "shortcuts.thisPage"),
+            _row(["ESC"], "shortcuts.close"),
+            _row(["↑", "↓"], "shortcuts.navigate"),
+            _row(["↵"], "shortcuts.enter"),
+            _row(["Home"], "shortcuts.toTop"),
+        ]
+    )
+
+    return f"""<div class="wrap">
+  <div class="page-head">
+    {breadcrumb_nav([_crumb_home(config), (T("shortcuts.title", lang), None, "shortcuts.title")], root=root)}
+    <span class="eyebrow">Shortcuts</span>
+    <h1 class="article-head__title" style="margin-top:14px" data-i18n="shortcuts.title">{esc(T("shortcuts.title", lang))}</h1>
+    <p class="article-head__summary" style="margin-top:18px" data-i18n="shortcuts.lead">{esc(T("shortcuts.lead", lang))}</p>
+  </div>
+  <section class="section">
+    <div class="shortcuts" data-shortcuts>{rows}</div>
+    <p class="list-note" data-i18n="shortcuts.tip">{esc(T("shortcuts.tip", lang))}</p>
+  </section>
+</div>"""
+
+
+# ---------- 订阅（V11） ----------
+
+def subscribe_page(*, config: dict, root: str = "", cloud: bool = True) -> str:
+    """订阅页：RSS 立刻可用；邮件订阅登记进 subscribers 表。
+
+    ⚠️ 站点当前**没有接入发信服务**，所以表单项的文案如实说明「先登记、
+    接入后开始投递」，不假装已经会发信。退订令牌与状态字段已经在表里准备好
+    （见 cloud/sql/2026-10-13-batch5-visitor-gaps.sql）。
+    """
+    lang = _lang(config)
+    site_title = esc(config.get("title") or "Blog")
+    feed_url = f"{root}feed.xml"
+
+    email_form = ""
+    if cloud:
+        email_form = f"""<form class="subscribe-form" data-subscribe-form novalidate>
+    <label class="subscribe-form__label" for="subscribe-email" data-i18n="subscribe.emailTitle">{esc(T("subscribe.emailTitle", lang))}</label>
+    <p class="subscribe-form__desc" data-i18n="subscribe.emailDesc">{esc(T("subscribe.emailDesc", lang))}</p>
+    <div class="subscribe-form__row">
+      <input class="subscribe-form__input" id="subscribe-email" type="email" name="email" required
+             autocomplete="email" inputmode="email" spellcheck="false"
+             placeholder="{esc(T("subscribe.emailPlaceholder", lang))}"
+             data-i18n-attr="placeholder:subscribe.emailPlaceholder" data-subscribe-input>
+      <button class="btn btn--primary" type="submit" data-subscribe-submit>
+        <span data-i18n="subscribe.emailSubmit">{esc(T("subscribe.emailSubmit", lang))}</span></button>
+    </div>
+    <p class="subscribe-form__status" data-subscribe-status role="status" aria-live="polite"></p>
+  </form>"""
+
+    return f"""<div class="wrap">
+  <div class="page-head">
+    {breadcrumb_nav([_crumb_home(config), (T("subscribe.title", lang), None, "subscribe.title")], root=root)}
+    <span class="eyebrow">Subscribe</span>
+    <h1 class="article-head__title" style="margin-top:14px" data-i18n="subscribe.title">{esc(T("subscribe.title", lang))}</h1>
+    <p class="article-head__summary" style="margin-top:18px" data-i18n="subscribe.lead">{esc(T("subscribe.lead", lang))}</p>
+  </div>
+  <section class="section subscribe">
+    <div class="subscribe__col">
+      <h2 class="subscribe__title" data-i18n="subscribe.rssTitle">{esc(T("subscribe.rssTitle", lang))}</h2>
+      <p class="subscribe__desc" data-i18n="subscribe.rssDesc">{esc(T("subscribe.rssDesc", lang))}</p>
+      <p class="subscribe__feed mono">{esc(feed_url)}</p>
+      <div class="subscribe__actions">
+        <button class="btn btn--ghost" type="button" data-copy-value="{esc(config.get("url") or "")}/feed.xml"
+                data-i18n="subscribe.rssCopy">{esc(T("subscribe.rssCopy", lang))}</button>
+        <a class="btn btn--ghost" href="{feed_url}">{icons["rss"]}<span data-i18n="subscribe.rssOpen">{esc(T("subscribe.rssOpen", lang))}</span></a>
+      </div>
+    </div>
+    <div class="subscribe__col">
+      {email_form}
+    </div>
+  </section>
+  <p class="list-note" data-i18n="subscribe.privacyNote">{esc(T("subscribe.privacyNote", lang))}</p>
+</div>"""
+
+
 def cloud_posts_page(*, config: dict, root: str = "") -> str:
+    lang = _lang(config)
     return f"""<div class="wrap" data-cloud-posts>
   <div class="page-head">
-    <nav class="breadcrumb" aria-label="面包屑">
-      <a href="{root}index.html">首页</a>
-      <span class="breadcrumb__sep">/</span>
-      <span>在线文章</span>
-    </nav>
+    {breadcrumb_nav([_crumb_home(config), (T("cloudPosts.title", lang), None, "cloudPosts.title")], root=root)}
     <span class="eyebrow">Online</span>
-    <h1 class="article-head__title" style="margin-top:14px">在线文章</h1>
+    <h1 class="article-head__title" style="margin-top:14px" data-i18n="cloudPosts.title">{esc(T("cloudPosts.title", lang))}</h1>
     <p class="article-head__summary" style="margin-top:18px">
-      站长与投稿用户发布的内容，共 <span data-cloud-count>0</span> 篇。它们与静态文章一样支持点赞、收藏与评论。
+      <span data-i18n="cloudPosts.lead">{esc(T("cloudPosts.lead", lang))}</span>
+      <span data-cloud-count>0</span> <span data-i18n="cloudPosts.unit">{esc(T("cloudPosts.unit", lang))}</span>
     </p>
     <div class="hero__actions" style="margin-top:24px">
-      <a class="btn btn--ghost btn--sm" href="{root}write.html">我也要投稿</a>
+      <a class="btn btn--ghost btn--sm" href="{root}write.html" data-i18n="cloudPosts.writeCta">{esc(T("cloudPosts.writeCta", lang))}</a>
     </div>
   </div>
   <section class="section" style="margin-top:44px">
-    <div class="loading-state" data-cloud-status>正在加载文章…</div>
+    <div class="loading-state" data-cloud-status data-i18n="common.loading">{esc(T("common.loading", lang))}</div>
     <ul class="post-list" data-cloud-post-list></ul>
-    <div class="empty-state" data-cloud-empty hidden>还没有在线发布的文章。</div>
-    <nav class="pagination" aria-label="分页导航" data-cloud-pagination hidden></nav>
+    <div class="empty-state" data-cloud-empty hidden data-i18n="cloudPosts.empty">{esc(T("cloudPosts.empty", lang))}</div>
+    <nav class="pagination" aria-label="{esc(T("cloudPosts.pagination", lang))}" data-i18n-attr="aria-label:cloudPosts.pagination" data-cloud-pagination hidden></nav>
   </section>
 </div>"""
 
 
 def cloud_post_page(*, config: dict, root: str = "") -> str:
+    lang = _lang(config)
     return f"""<div class="wrap" data-cloud-post>
   <div class="page-head">
-    <nav class="breadcrumb" aria-label="面包屑">
-      <a href="{root}index.html">首页</a>
-      <span class="breadcrumb__sep">/</span>
-      <a href="{root}posts.html">在线文章</a>
-    </nav>
+    {breadcrumb_nav(
+        [_crumb_home(config), (T("cloudPosts.title", lang), "posts.html", "cloudPosts.title")],
+        root=root,
+        # 标题要等客户端拿到文章才有，这里先留一个空节点由 cloud-posts.js 填
+        extra='<span class="breadcrumb__sep">/</span><span aria-current="page" data-cloud-crumb hidden></span>',
+    )}
     <header class="article-head" data-cloud-head>
       <span class="eyebrow">Online</span>
-      <h1 class="article-head__title">加载中…</h1>
+      <h1 class="article-head__title" data-i18n="common.loading">{esc(T("common.loading", lang))}</h1>
     </header>
   </div>
   <div class="article-layout">

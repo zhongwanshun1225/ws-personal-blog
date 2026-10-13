@@ -6,6 +6,18 @@
 - 代码高亮在【构建时】完成，页面不需要任何客户端高亮脚本，
   打开即见颜色，也没有 FOUC；
 - 渲染过程中顺带收集标题，用于生成文章目录（TOC）。
+
+数学公式与图表（V12）：
+
+- ``$$…$$``（块级）与 ``$…$``（行内）在构建时被抽成占位符，渲染完再换成
+  ``<div class="math-block" data-tex="…">`` / ``<span class="math-inline" data-tex="…">``；
+  真正的排版由浏览器端 ``math.js`` 调 KaTeX 完成。
+- ```` ```mermaid ```` 代码块渲染成 ``<div data-mermaid>``，源码放在 ``<pre>`` 里，
+  由 ``math.js`` 调 Mermaid 画图。
+- 两者都是**按需加载**：``render_markdown`` 会返回 ``has_math`` / ``has_mermaid``，
+  构建器只给真的有公式或图表的页面注入 ``math.js`` 与对应库（KaTeX 273 KB、
+  Mermaid 2.5 MB，不加载就是 0）。
+- 公式抽取做了保护：围栏代码块与行内代码里的 ``$`` 不会被当成公式。
 """
 
 from __future__ import annotations
@@ -34,6 +46,100 @@ _CALLOUT_RE = re.compile(
 _TAG_RE = re.compile(r"<[^>]+>")
 _EXTERNAL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+# ---------- 公式抽取（V12） ----------
+# 占位符用「私用区」字符包起来（U+E000 / U+E001）。
+# ⚠️ 这里踩过一个坑：一开始用 \x00 做哨兵，结果 CommonMark 规范要求把 NUL
+# 替换成 U+FFFD，解析后哨兵就变了形，替换永远匹配不上。私用区字符不会被改。
+_SENT_L, _SENT_R = "\ue000", "\ue001"
+_MATH_BLOCK_TOKEN = _SENT_L + "BM{index}" + _SENT_R
+_MATH_INLINE_TOKEN = _SENT_L + "IM{index}" + _SENT_R
+_SPAN_TOKEN = _SENT_L + "S{index}" + _SENT_R
+
+_MASK_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)")
+_FENCE_BLOCK_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|\Z)", re.MULTILINE)
+_BLOCK_MATH_RE = re.compile(r"\$\$(?:\s*\n)?([\s\S]+?)\$\$")
+# 行内公式：开 $ 后不能是空白、闭 $ 前不能是空白、闭 $ 后不能是数字 ——
+# 这样「价格 $5 到 $9」这类文本不会被误判成公式。
+_INLINE_MATH_RE = re.compile(r"(?<![\\$])\$(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\d)")
+
+
+def _protect_spans(source: str) -> tuple[str, list[str]]:
+    """把围栏代码块与行内代码临时挖走，返回（挖空后的文本, 原片段表）。"""
+    stash: list[str] = []
+
+    def _stash(match: re.Match) -> str:
+        stash.append(match.group(0))
+        return _SPAN_TOKEN.format(index=len(stash) - 1)
+
+    # 先整段围栏（``` 之间的内容完全不参与公式识别），再行内代码
+    text = _FENCE_BLOCK_RE.sub(_stash, source)
+    text = _MASK_INLINE_CODE_RE.sub(_stash, text)
+    return text, stash
+
+
+def extract_math(source: str) -> tuple[str, dict[str, tuple[str, str]]]:
+    """把公式换成占位符。
+
+    返回（替换后的 Markdown 源码, ``{占位符: (tex, 类型)}``）。
+    类型是 ``"block"`` 或 ``"inline"``。
+    """
+    text, stash = _protect_spans(source or "")
+    found: dict[str, tuple[str, str]] = {}
+
+    def _block(match: re.Match) -> str:
+        token = _MATH_BLOCK_TOKEN.format(index=len(found))
+        found[token] = (match.group(1).strip(), "block")
+        return f"\n{token}\n"
+
+    def _inline(match: re.Match) -> str:
+        token = _MATH_INLINE_TOKEN.format(index=len(found))
+        found[token] = (match.group(1).strip(), "inline")
+        return token
+
+    text = _BLOCK_MATH_RE.sub(_block, text)
+    text = _INLINE_MATH_RE.sub(_inline, text)
+
+    # 还原被挖走的代码片段
+    for index, fragment in enumerate(stash):
+        text = text.replace(_SPAN_TOKEN.format(index=index), fragment)
+    return text, found
+
+
+def _render_math(html: str, found: dict[str, tuple[str, str]]) -> str:
+    """把占位符换成可被 math.js 渲染的容器。
+
+    ``<p>\\x00BM0\\x00</p>`` 这种「块级公式独占一段」的情形会先被剥掉
+    外层 ``<p>`` —— 否则 ``<div>`` 会嵌在 ``<p>`` 里，浏览器解析器会拆散结构。
+    """
+    if not found:
+        return html
+
+    for token, (tex, kind) in found.items():
+        if kind == "block":
+            html = re.sub(
+                r"<p>\s*" + re.escape(token) + r"\s*</p>",
+                lambda _m, k=token: k,
+                html,
+            )
+
+    for token, (tex, kind) in found.items():
+        payload = escape_html(tex)
+        # 元素里同时放一份 LaTeX 源码：没有 JS（或被 CSP / 网络挡住 KaTeX）时，
+        # 读者看到的是一行可辨认的公式源码，而不是一片空白。
+        # KaTeX 渲染成功会整体替换内部内容，data-tex 才是它的输入。
+        if kind == "block":
+            markup = (
+                '<div class="math-block" data-tex="' + payload + '" data-display="1">'
+                + payload
+                + "</div>"
+            )
+        else:
+            markup = (
+                '<span class="math-inline" data-tex="' + payload + '">' + payload + "</span>"
+            )
+        html = html.replace(token, markup)
+    return html
+
 
 def _make_parser() -> MarkdownIt:
     md = MarkdownIt("commonmark", {"html": True, "breaks": False, "typographer": False})
@@ -48,6 +154,8 @@ class _Renderer:
         self.md = md
         self.toc: list[dict] = []
         self._used_ids: dict[str, int] = {}
+        # V12：记录本页是否真的用到图表，构建器据此决定要不要注入 math.js
+        self.has_mermaid = False
 
     # ---------- 块级 ----------
 
@@ -143,6 +251,23 @@ class _Renderer:
     def _code_block(self, token) -> str:
         info = str(token.info or "").strip()
         trimmed_lang = info.split()[0] if info else ""
+
+        # ```mermaid —— 不生成高亮代码块，而是留一个容器等浏览器端画图。
+        # 源码放在 <pre> 里（已转义），math.js 取 textContent 交给 mermaid.render。
+        if trimmed_lang.lower() == "mermaid":
+            self.has_mermaid = True
+            return (
+                '<div class="mermaid-block" data-mermaid>'
+                '<div class="mermaid-block__bar">'
+                '<span class="mermaid-block__label">Mermaid</span>'
+                '<button class="mermaid-block__src-toggle" type="button" data-mermaid-toggle '
+                'aria-expanded="false">查看源码</button>'
+                "</div>"
+                f'<pre class="mermaid-block__src" data-mermaid-src>{escape_html(token.content)}</pre>'
+                '<div class="mermaid-block__out" data-mermaid-out aria-busy="true"></div>'
+                "</div>"
+            )
+
         code_html, used = highlight_code(token.content, trimmed_lang)
         label = (
             LANG_LABELS.get(used)
@@ -304,10 +429,48 @@ class _Renderer:
         return "".join(out)
 
 
+# ---------- 图片懒加载兜底（V19） ----------
+# Markdown 语法里的图片已经在 render_inline 里带了 loading="lazy"，
+# 但正文里直接写的原始 HTML（<img src=…>）会原样透传 —— 这类图数量不定、
+# 又常在长文深处，不补属性就是首屏带宽的纯损失。这里做一次统一的兜底。
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_IMG_HAS_LOADING_RE = re.compile(r"\bloading\s*=", re.IGNORECASE)
+_IMG_HAS_DECODING_RE = re.compile(r"\bdecoding\s*=", re.IGNORECASE)
+
+
+def _ensure_lazy_images(html: str) -> str:
+    """给还没有 ``loading`` 的 ``<img>`` 补上 lazy / async。"""
+
+    def patch(match: re.Match) -> str:
+        tag = match.group(0)
+        extra = ""
+        if not _IMG_HAS_LOADING_RE.search(tag):
+            extra += ' loading="lazy"'
+        if not _IMG_HAS_DECODING_RE.search(tag):
+            extra += ' decoding="async"'
+        if not extra:
+            return tag
+        return tag[:-1].rstrip() + extra + ">"
+
+    return _IMG_TAG_RE.sub(patch, html)
+
+
 def render_markdown(markdown: str = "") -> dict:
-    """渲染 Markdown，返回 ``{"html": ..., "toc": [...]}``。"""
+    """渲染 Markdown，返回 ``{"html", "toc", "has_math", "has_mermaid"}``。
+
+    ``has_math`` / ``has_mermaid`` 供构建器做按需加载 —— 没有公式与图表的页面
+    不会去下载 KaTeX（273 KB）与 Mermaid（2.5 MB）。
+    """
+    source, math_found = extract_math(str(markdown or ""))
     md = _make_parser()
     renderer = _Renderer(md)
-    tokens = md.parse(str(markdown or ""))
+    tokens = md.parse(source)
     html = renderer.render_blocks(tokens)
-    return {"html": html, "toc": renderer.toc}
+    html = _render_math(html, math_found)
+    html = _ensure_lazy_images(html)
+    return {
+        "html": html,
+        "toc": renderer.toc,
+        "has_math": bool(math_found),
+        "has_mermaid": renderer.has_mermaid,
+    }

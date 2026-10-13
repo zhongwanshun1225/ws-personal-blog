@@ -136,6 +136,13 @@
   }
 
   function decorate(node) {
+    /* 图片（V19）：marked 输出的 <img> 没有懒加载属性，正文里一堆插图时
+       首屏会一起抢带宽。统一补上；已经在首屏之外的图尤其受益。 */
+    Array.prototype.forEach.call(node.querySelectorAll('img'), function (img) {
+      if (!img.getAttribute('loading')) img.setAttribute('loading', 'lazy');
+      if (!img.getAttribute('decoding')) img.setAttribute('decoding', 'async');
+    });
+
     /* 标题：加锚点 id 与 # 链接 */
     Array.prototype.forEach.call(node.querySelectorAll('h1, h2, h3, h4, h5, h6'), function (heading) {
       var depth = Number(heading.tagName.slice(1));
@@ -266,17 +273,118 @@
       '</ul>';
   }
 
+  /* ---------------- 公式 / 图表（V12） ----------------
+   * 构建期（wsblog/markdown.py）会把这些抽成占位容器；这里是同一套规则的
+   * 客户端版本，供「后台预览」与「云文章详情」使用 —— 两边看到的排版一致。
+   *
+   * 哨兵用私用区字符（U+E000 / U+E001 / U+E002 / U+E003）：
+   * 它们在 Markdown 里不会自然出现，也不会被 marked 转义掉。
+   */
+  var SENT_L = '\uE000';
+  var SENT_R = '\uE001';
+  var STASH_L = '\uE002';
+  var STASH_R = '\uE003';
+
+  function extractMath(source) {
+    var stash = [];
+    var math = [];
+    var mathSeq = 0;
+
+    function pushStash(text) {
+      stash.push(text);
+      return STASH_L + (stash.length - 1) + STASH_R;
+    }
+
+    /* 1) 先保护围栏代码块与行内代码：里面的 $ 不是公式 */
+    var masked = source
+      .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|$)/gm, pushStash)
+      .replace(/`[^`\n]*`/g, pushStash);
+
+    /* 2) 块级 $$…$$ */
+    masked = masked.replace(/\$\$(?:[ \t]*\n)?([\s\S]+?)\$\$/g, function (_all, tex) {
+      var token = SENT_L + 'BM' + mathSeq++ + SENT_R;
+      math.push({ token: token, tex: tex, block: true });
+      return token;
+    });
+
+    /* 3) 行内 $…$：前后不能是反斜杠/空白，结尾不能直接跟数字（避免 $5 到 $9） */
+    masked = masked.replace(/(^|[^\\$])\$(?!\s)([^$\n]+?)\$(?!\d)/g, function (_all, lead, tex) {
+      if (!tex.replace(/\s/g, '')) return lead + _all.slice(lead.length);
+      var token = SENT_L + 'IM' + mathSeq++ + SENT_R;
+      math.push({ token: token, tex: tex, block: false });
+      return lead + token;
+    });
+
+    /* 4) 还原被保护起来的代码 */
+    var restored = masked.replace(new RegExp(STASH_L + '(\\d+)' + STASH_R, 'g'), function (_all, idx) {
+      return stash[parseInt(idx, 10)] || '';
+    });
+    return { source: restored, math: math };
+  }
+
+  function applyMath(html, math) {
+    if (!math.length) return html;
+    math.forEach(function (entry) {
+      var payload = escapeHtml(entry.tex);
+      if (entry.block) {
+        /* 块级公式独占一段时把外层 <p> 剥掉，否则 <div> 嵌在 <p> 里会被解析器拆散 */
+        html = html.replace(
+          new RegExp('<p>\\s*' + entry.token + '\\s*</p>', 'g'),
+          entry.token
+        );
+      }
+      html = html.split(entry.token).join(
+        entry.block
+          ? '<div class="math-block" data-tex="' + payload + '" data-display="1">' + payload + '</div>'
+          : '<span class="math-inline" data-tex="' + payload + '">' + payload + '</span>'
+      );
+    });
+    return html;
+  }
+
+  /* ```mermaid 代码块（marked 已经把它渲染成 <pre><code class="language-mermaid">） */
+  function transformMermaid(holder) {
+    var found = false;
+    Array.prototype.forEach.call(holder.querySelectorAll('pre > code'), function (code) {
+      if (found) return;
+      if (!/(?:^|\s)language-mermaid\b/.test(code.className || '')) return;
+      var pre = code.parentNode;
+      var block = document.createElement('div');
+      block.className = 'mermaid-block';
+      block.setAttribute('data-mermaid', '');
+      block.innerHTML =
+        '<div class="mermaid-block__bar">' +
+        '<span class="mermaid-block__label">Mermaid</span>' +
+        '<button class="mermaid-block__src-toggle" type="button" data-mermaid-toggle ' +
+        'aria-expanded="false">查看源码</button>' +
+        '</div>' +
+        '<pre class="mermaid-block__src" data-mermaid-src></pre>' +
+        '<div class="mermaid-block__out" data-mermaid-out aria-busy="true"></div>';
+      /* 源码用 textContent 写入，避免把图里的标签当成 HTML */
+      block.querySelector('[data-mermaid-src]').textContent = code.textContent;
+      pre.parentNode.replaceChild(block, pre);
+      found = true;
+    });
+    return found;
+  }
+
   function renderMarkdown(markdown, options) {
     usedIds = {};
     var source = String(markdown || '');
     if (!window.marked) return '<p>' + escapeHtml(source).replace(/\n/g, '<br>') + '</p>';
-    var html = window.marked.parse(source, { gfm: true, breaks: false });
+    var extracted = extractMath(source);
+    var html = window.marked.parse(extracted.source, { gfm: true, breaks: false });
+    html = applyMath(html, extracted.math);
     var holder = document.createElement('div');
     holder.innerHTML = html;
     sanitize(holder);
     decorate(holder);
+    transformMermaid(holder);
     var opts = options || {};
     if (opts.tocTarget) buildToc(holder, opts.tocTarget, opts.tocTitle);
+    /* 不在这里调 WSBlogMath.scan()：此刻 HTML 还只是个字符串，没进 DOM。
+       math.js 用 MutationObserver 盯着新插入的 [data-tex] / [data-mermaid]，
+       调用方把返回值写进页面后会自动被接管。 */
     return holder.innerHTML;
   }
 

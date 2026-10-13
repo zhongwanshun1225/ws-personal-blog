@@ -736,6 +736,11 @@
     });
   }
 
+  /* 「我的投稿」原来写死 50 条，超出的静默消失（V3）。
+     现在按需扩展，并在可能被截断时把「加载更多」摆出来。 */
+  var mineLimit = 50;
+  var MINE_STEP = 50;
+
   function loadMine() {
     var uid = C.currentUid();
     if (!uid) return Promise.resolve([]);
@@ -745,16 +750,29 @@
               ' edit_submitted_at, edit_review_note')
       .eq('author_id', uid)
       .order('updated_at', { ascending: false })
-      .limit(50)
+      .limit(mineLimit)
       .then(function (res) {
         if (res && res.error) throw res.error;
         var list = (res && res.data) || [];
         myPosts = list;
         setText(countEl, list.length);
         if (listEl) {
+          var more = list.length >= mineLimit
+            ? '<li class="stack-more"><button class="link-btn" type="button" data-mine-more>' +
+              C.escapeHtml(typeof window.__wsT === 'function' ? window.__wsT('account.loadMore', '加载更多') : '加载更多') +
+              '</button></li>'
+            : '';
           listEl.innerHTML = list.length
-            ? list.map(mineRow).join('')
+            ? list.map(mineRow).join('') + more
             : '<li class="stack-empty">还没有投稿，写一篇试试。</li>';
+          var moreBtn = listEl.querySelector('[data-mine-more]');
+          if (moreBtn) {
+            moreBtn.addEventListener('click', function () {
+              moreBtn.disabled = true;
+              mineLimit += MINE_STEP;
+              loadMine();
+            });
+          }
         }
         bindMine();
         return list;
