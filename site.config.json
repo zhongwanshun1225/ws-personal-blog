@@ -1,11 +1,15 @@
 {
   "_readme": "这是站点的主配置文件。下面所有带 ⚠️ 的字段都是占位内容，请改成你自己的信息。改完运行 python build.py 即可生效。",
-
   "title": "WS Blog",
   "author": "WS",
   "jobTitle": "全栈开发 / 技术爱好者",
   "description": "记录技术实践、项目复盘与一些思考。",
-  "keywords": ["技术博客", "前端", "全栈", "开源项目"],
+  "keywords": [
+    "技术博客",
+    "前端",
+    "全栈",
+    "开源项目"
+  ],
   "lang": "zh-CN",
   "url": "https://ws-blog.app.workbuddy.host",
   "siteOrigin": "https://ws-blog.app.workbuddy.host",
@@ -15,36 +19,77 @@
     "basePath": "/ws-personal-blog"
   },
   "since": 2026,
-
   "hero": {
     "greeting": "Hello, 我是",
     "headline": "WS",
     "slogan": "写代码，也写代码背后的思考。",
     "intro": "这里沉淀我在工程实践中踩过的坑、做过的项目，以及那些想明白了才敢写下来的东西。内容以 Web 开发、工程化与工具链为主。",
-    "primaryAction": { "label": "看看项目", "url": "projects.html" },
-    "secondaryAction": { "label": "关于我", "url": "about.html" },
+    "primaryAction": {
+      "label": "看看项目",
+      "url": "projects.html"
+    },
+    "secondaryAction": {
+      "label": "关于我",
+      "url": "about.html"
+    },
     "stats": [
-      { "label": "技术文章", "value": "auto:posts" },
-      { "label": "项目作品", "value": "auto:projects" },
-      { "label": "技术标签", "value": "auto:tags" }
+      {
+        "label": "技术文章",
+        "value": "auto:posts"
+      },
+      {
+        "label": "项目作品",
+        "value": "auto:projects"
+      },
+      {
+        "label": "技术标签",
+        "value": "auto:tags"
+      }
     ]
   },
-
   "nav": [
-    { "label": "首页", "url": "index.html" },
-    { "label": "项目", "url": "projects.html" },
-    { "label": "在线文章", "url": "posts.html" },
-    { "label": "归档", "url": "archive.html" },
-    { "label": "标签", "url": "tags.html" },
-    { "label": "关于", "url": "about.html" }
+    {
+      "label": "首页",
+      "url": "index.html"
+    },
+    {
+      "label": "项目",
+      "url": "projects.html"
+    },
+    {
+      "label": "在线文章",
+      "url": "posts.html"
+    },
+    {
+      "label": "归档",
+      "url": "archive.html"
+    },
+    {
+      "label": "标签",
+      "url": "tags.html"
+    },
+    {
+      "label": "关于",
+      "url": "about.html"
+    }
   ],
-
   "social": [
-    { "label": "GitHub", "url": "https://github.com/zhongwanshun1225", "icon": "github" },
-    { "label": "邮箱", "url": "mailto:your@email.com", "icon": "mail" },
-    { "label": "RSS", "url": "feed.xml", "icon": "rss" }
+    {
+      "label": "GitHub",
+      "url": "https://github.com/zhongwanshun1225",
+      "icon": "github"
+    },
+    {
+      "label": "邮箱",
+      "url": "mailto:your@email.com",
+      "icon": "mail"
+    },
+    {
+      "label": "RSS",
+      "url": "feed.xml",
+      "icon": "rss"
+    }
   ],
-
   "about": {
     "skills": [
       "TypeScript / JavaScript",
@@ -55,18 +100,25 @@
       "Docker / CI-CD"
     ],
     "timeline": [
-      { "period": "现在", "title": "独立开发", "desc": "把想法做成能跑起来的东西。" },
-      { "period": "之前", "title": "全栈开发", "desc": "负责过若干中后台与 C 端产品的研发。" }
+      {
+        "period": "现在",
+        "title": "独立开发",
+        "desc": "把想法做成能跑起来的东西。"
+      },
+      {
+        "period": "之前",
+        "title": "全栈开发",
+        "desc": "负责过若干中后台与 C 端产品的研发。"
+      }
     ]
   },
-
   "footer": {
     "note": "本站由 Python 自建静态生成器构建，托管于云服务。",
     "icp": ""
   },
-
   "options": {
-    "postsPerPage": 0,
+    "homePosts": 8,
+    "postsPerPage": 20,
     "showReadingTime": true,
     "showToc": true,
     "externalLinkIcon": true

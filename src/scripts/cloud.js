@@ -429,6 +429,7 @@
         '</button>' +
         '<div class="auth-dropdown">' +
         '<div class="auth-dropdown__role">当前身份：' + (adminMode ? '管理员' : '普通用户') + '</div>' +
+        '<a href="' + ROOT + 'notifications.html">我的通知</a>' +
         '<a href="' + ROOT + 'write.html">写文章</a>' +
         (adminMode
           ? '<a href="' + ROOT + 'admin.html">管理后台</a>' +

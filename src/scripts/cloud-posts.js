@@ -61,46 +61,149 @@
 
   /* ---------------- 列表页 ---------------- */
 
-  function renderList(posts) {
+  /* 每页条数。文章多了之后一次渲染上百张卡片会明显拖慢首屏，
+     所以列表改为客户端分页，页号同步到 ?page=（可分享、可后退）。 */
+  var PAGE_SIZE = 10;
+  var allPosts = [];
+  var currentPage = 1;
+
+  function readPageParam() {
+    try {
+      var n = parseInt(new URLSearchParams(location.search).get('page'), 10);
+      return n > 1 ? n : 1;
+    } catch (e) {
+      return 1;
+    }
+  }
+
+  function syncPageParam(page) {
+    if (!window.history || !history.replaceState) return;
+    try {
+      var url = new URL(location.href);
+      if (page > 1) url.searchParams.set('page', String(page));
+      else url.searchParams.delete('page');
+      history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+    } catch (e) {
+      /* 忽略 */
+    }
+  }
+
+  function itemHtml(post) {
+    var tags = tagsOf(post.tags);
+    var chips = tags
+      .map(function (tag) {
+        return '<span class="tag">' + escapeHtml(tag) + '</span>';
+      })
+      .join('');
+    return (
+      '<li class="post-item">' +
+      '<div class="post-item__link">' +
+      '<div class="post-item__date">' +
+      escapeHtml(formatDate(post.published_at || post.created_at)) +
+      '<span>' + readingTime(post.content_md) + ' 分钟</span>' +
+      '</div>' +
+      '<div class="post-item__main">' +
+      '<h3 class="post-item__title">' +
+      '<a class="stretch-link" href="' + C.root + 'post.html?slug=' +
+      encodeURIComponent(post.slug) + '">' + escapeHtml(post.title) + '</a>' +
+      '</h3>' +
+      '<p class="post-item__summary">' + escapeHtml(post.summary || '') + '</p>' +
+      '<div class="post-item__meta">' + chips + '</div>' +
+      '</div></div></li>'
+    );
+  }
+
+  function renderPagination(pagerEl, totalPages) {
+    if (!pagerEl) return;
+    if (totalPages <= 1) {
+      pagerEl.setAttribute('hidden', '');
+      pagerEl.innerHTML = '';
+      return;
+    }
+    pagerEl.removeAttribute('hidden');
+
+    function link(page, label, rel, disabled) {
+      if (disabled) return '<span class="pagination__link is-disabled">' + label + '</span>';
+      return (
+        '<a class="pagination__link" data-page="' + page + '"' +
+        (rel ? ' rel="' + rel + '"' : '') +
+        ' href="?page=' + page + '">' + label + '</a>'
+      );
+    }
+
+    var numbers = [];
+    for (var n = 1; n <= totalPages; n += 1) {
+      if (n === 1 || n === totalPages || Math.abs(n - currentPage) <= 2) numbers.push(n);
+      else if (numbers.length && numbers[numbers.length - 1] !== '…') numbers.push('…');
+    }
+
+    var parts = [link(currentPage - 1, '← 上一页', 'prev', currentPage <= 1)];
+    numbers.forEach(function (n) {
+      if (n === '…') parts.push('<span class="pagination__gap">…</span>');
+      else if (n === currentPage)
+        parts.push('<span class="pagination__link is-current" aria-current="page">' + n + '</span>');
+      else parts.push(link(n, String(n), '', false));
+    });
+    parts.push(link(currentPage + 1, '下一页 →', 'next', currentPage >= totalPages));
+
+    pagerEl.innerHTML = parts.join('');
+  }
+
+  function renderPage() {
+    if (!listRoot) return;
     var listEl = q('[data-cloud-post-list]', listRoot);
     var emptyEl = q('[data-cloud-empty]', listRoot);
     var countEl = q('[data-cloud-count]', listRoot);
-    if (countEl) countEl.textContent = String(posts.length);
+    var pagerEl = q('[data-cloud-pagination]', listRoot);
 
-    if (!posts.length) {
+    var total = allPosts.length;
+    if (countEl) countEl.textContent = String(total);
+
+    if (!total) {
       if (listEl) listEl.innerHTML = '';
       if (emptyEl) emptyEl.removeAttribute('hidden');
+      if (pagerEl) pagerEl.setAttribute('hidden', '');
       return;
     }
     if (emptyEl) emptyEl.setAttribute('hidden', '');
-    if (!listEl) return;
 
-    listEl.innerHTML = posts
-      .map(function (post) {
-        var tags = tagsOf(post.tags);
-        var chips = tags
-          .map(function (tag) {
-            return '<span class="tag">' + escapeHtml(tag) + '</span>';
-          })
-          .join('');
-        return (
-          '<li class="post-item">' +
-          '<div class="post-item__link">' +
-          '<div class="post-item__date">' +
-          escapeHtml(formatDate(post.published_at || post.created_at)) +
-          '<span>' + readingTime(post.content_md) + ' 分钟</span>' +
-          '</div>' +
-          '<div class="post-item__main">' +
-          '<h3 class="post-item__title">' +
-          '<a class="stretch-link" href="' + C.root + 'post.html?slug=' +
-          encodeURIComponent(post.slug) + '">' + escapeHtml(post.title) + '</a>' +
-          '</h3>' +
-          '<p class="post-item__summary">' + escapeHtml(post.summary || '') + '</p>' +
-          '<div class="post-item__meta">' + chips + '</div>' +
-          '</div></div></li>'
-        );
-      })
-      .join('');
+    var totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (currentPage > totalPages) currentPage = totalPages;
+    if (currentPage < 1) currentPage = 1;
+
+    var start = (currentPage - 1) * PAGE_SIZE;
+    if (listEl) listEl.innerHTML = allPosts.slice(start, start + PAGE_SIZE).map(itemHtml).join('');
+    renderPagination(pagerEl, totalPages);
+  }
+
+  function goToPage(page) {
+    var totalPages = Math.max(1, Math.ceil(allPosts.length / PAGE_SIZE));
+    var target = Math.min(Math.max(1, page), totalPages);
+    if (target === currentPage) return;
+    currentPage = target;
+    syncPageParam(currentPage);
+    renderPage();
+    var head = q('.page-head', listRoot);
+    if (head && head.scrollIntoView) head.scrollIntoView({ block: 'start' });
+  }
+
+  function bindPagination() {
+    if (!listRoot) return;
+    var pagerEl = q('[data-cloud-pagination]', listRoot);
+    if (pagerEl) {
+      pagerEl.addEventListener('click', function (e) {
+        var link = e.target.closest('[data-page]');
+        if (!link) return;
+        e.preventDefault();
+        goToPage(parseInt(link.getAttribute('data-page'), 10) || 1);
+      });
+    }
+    window.addEventListener('popstate', function () {
+      var page = readPageParam();
+      if (page === currentPage) return;
+      currentPage = page;
+      renderPage();
+    });
   }
 
   function loadList() {
@@ -109,11 +212,13 @@
       .from('posts_public')
       .select('id, slug, title, summary, tags, content_md, published_at, created_at')
       .order('published_at', { ascending: false })
-      .limit(60)
+      .limit(200)
       .then(function (res) {
         if (res && res.error) throw res.error;
         if (statusEl) statusEl.setAttribute('hidden', '');
-        renderList((res && res.data) || []);
+        allPosts = (res && res.data) || [];
+        currentPage = readPageParam();
+        renderPage();
       })
       .catch(function (err) {
         console.warn('[cloud-posts] 列表加载失败', err && err.message);
@@ -292,7 +397,10 @@
   /* ---------------- 启动 ---------------- */
 
   C.booted().then(function () {
-    if (listRoot) loadList();
+    if (listRoot) {
+      bindPagination();
+      loadList();
+    }
     if (detailRoot) loadDetail();
   });
 })();

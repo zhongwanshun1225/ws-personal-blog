@@ -65,12 +65,39 @@
   var emailNote = q('[data-admin-email-note]');
   var emailAddBtn = q('[data-admin-email-add]');
 
+  /* 分页与搜索控件 */
+  var postSearchEl = q('[data-post-search]');
+  var postStatusEl = q('[data-post-status]');
+  var postPagerEl = q('[data-post-pager]');
+  var commentSearchEl = q('[data-comment-search]');
+  var commentPagerEl = q('[data-comment-pager]');
+  var userSearchEl = q('[data-user-search]');
+  var userStatusEl = q('[data-user-status]');
+  var userPagerEl = q('[data-user-pager]');
+  var reviewPagerEl = q('[data-review-pager]');
+  var reviewedPagerEl = q('[data-reviewed-pager]');
+
+  /* 后台编辑器本地草稿 */
+  var adminDraftBanner = q('[data-admin-draft-banner]');
+  var adminDraftText = q('[data-admin-draft-text]');
+  var adminDraftRestore = q('[data-admin-draft-restore]');
+  var adminDraftDiscard = q('[data-admin-draft-discard]');
+  var adminStatusEl = q('[data-admin-status]');
+
   var busy = false;
   var editingSlug = '';
   var allComments = [];
   var allUsers = [];
   var allPosts = [];
-  var commentFilter = 'all';
+  var pendingAdminDraft = null;
+  var adminDraft = null;
+
+  /* 三个列表各自的分页 / 筛选状态（服务端分页，见 admin_posts_page 等 RPC） */
+  var postsState = { search: '', status: 'all', page: 1, pageSize: 20, total: 0 };
+  var commentsState = { search: '', status: 'all', page: 1, pageSize: 30, total: 0 };
+  var usersState = { search: '', status: 'all', page: 1, pageSize: 30, total: 0 };
+  var pendingState = { page: 1, pageSize: 20, total: 0 };
+  var reviewedState = { page: 1, pageSize: 20, total: 0 };
 
   /* 状态徽章：draft / pending / published / rejected */
   var STATUS_META = {
@@ -126,6 +153,182 @@
       var message = (err && err.message) || fallbackMessage || '操作失败';
       toast(message);
       throw err;
+    });
+  }
+
+  /** 从分页 RPC 的返回里取出 rows，顺带做错误判定。 */
+  function pageRows(data, fallbackMessage) {
+    var payload = data && typeof data === 'object' ? data : {};
+    if (payload.ok !== true) throw new Error(payload.error || fallbackMessage || '加载失败');
+    return payload;
+  }
+
+  /** 通用分页条：上一页 / 页码 / 下一页。 */
+  function renderPager(el, state, reload) {
+    if (!el) return;
+    var totalPages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    if (!state.total) {
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML =
+      '<button class="btn btn--ghost btn--sm" type="button" data-pager-prev' +
+      (state.page <= 1 ? ' disabled' : '') + '>上一页</button>' +
+      '<span class="admin-pager__info">第 ' + state.page + ' / ' + totalPages + ' 页 · 共 ' +
+      state.total + ' 条</span>' +
+      '<button class="btn btn--ghost btn--sm" type="button" data-pager-next' +
+      (state.page >= totalPages ? ' disabled' : '') + '>下一页</button>';
+    var prev = el.querySelector('[data-pager-prev]');
+    var next = el.querySelector('[data-pager-next]');
+    if (prev) {
+      prev.addEventListener('click', function () {
+        if (state.page > 1) {
+          state.page -= 1;
+          reload();
+        }
+      });
+    }
+    if (next) {
+      next.addEventListener('click', function () {
+        if (state.page < totalPages) {
+          state.page += 1;
+          reload();
+        }
+      });
+    }
+  }
+
+  /** 搜索框防抖：输入停顿后再查，避免每敲一个字打一次库。 */
+  function bindSearch(input, state, reload, delay) {
+    if (!input) return;
+    var timer = null;
+    input.addEventListener('input', function () {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(function () {
+        var value = input.value.trim();
+        if (value === state.search) return;
+        state.search = value;
+        state.page = 1;
+        reload();
+      }, delay || 350);
+    });
+  }
+
+  function bindSelect(select, state, reload) {
+    if (!select) return;
+    select.addEventListener('change', function () {
+      state.status = select.value || 'all';
+      state.page = 1;
+      reload();
+    });
+  }
+
+  /* ---------------- 后台编辑器的本地草稿 ---------------- */
+
+  var ADMIN_DRAFT_NS = 'admin';
+
+  function adminDraftKey() {
+    return window.WSBlogDraft
+      ? window.WSBlogDraft.key(ADMIN_DRAFT_NS, editingSlug)
+      : '';
+  }
+
+  function setAdminStatus(text, level) {
+    if (!adminStatusEl) return;
+    adminStatusEl.textContent = text || '';
+    adminStatusEl.setAttribute('data-level', level || 'idle');
+  }
+
+  function collectAdminDraft() {
+    return {
+      title: (fieldTitle && fieldTitle.value) || '',
+      slug: (fieldSlug && fieldSlug.value) || '',
+      summary: (fieldSummary && fieldSummary.value) || '',
+      tags: (fieldTags && fieldTags.value) || '',
+      content_md: (fieldContent && fieldContent.value) || '',
+      status: (fieldStatus && fieldStatus.value) || 'draft',
+    };
+  }
+
+  function setupAdminDraft() {
+    if (!window.WSBlogDraft || adminDraft || !form) return;
+    adminDraft = window.WSBlogDraft.attach({
+      form: form,
+      keyFn: adminDraftKey,
+      collect: collectAdminDraft,
+      isEmpty: function (data) {
+        return !(String(data.title || '').trim() || String(data.content_md || '').trim());
+      },
+      onStatus: setAdminStatus,
+    });
+  }
+
+  function hideAdminDraftBanner() {
+    pendingAdminDraft = null;
+    if (adminDraftBanner) adminDraftBanner.setAttribute('hidden', '');
+  }
+
+  function checkAdminDraft() {
+    if (!window.WSBlogDraft || !form) return;
+    var key = adminDraftKey();
+    if (!key) return;
+    var data = window.WSBlogDraft.read(key);
+    hideAdminDraftBanner();
+    if (!data) return;
+    if (!(String(data.title || '').trim() || String(data.content_md || '').trim())) {
+      window.WSBlogDraft.remove(key);
+      return;
+    }
+    /* 编辑器里已有内容且与本地草稿一致时，不必提示 */
+    var current = collectAdminDraft();
+    var same = ['title', 'slug', 'summary', 'tags', 'content_md'].every(function (k) {
+      return String(current[k] || '') === String(data[k] || '');
+    });
+    if (same) {
+      window.WSBlogDraft.remove(key);
+      return;
+    }
+    pendingAdminDraft = data;
+    if (adminDraftText) {
+      var when = new Date(data.savedAt);
+      adminDraftText.textContent =
+        '检测到本机保存的草稿「' + (String(data.title || '').trim() || '（未命名）') + '」（' +
+        String(data.content_md || '').length + ' 字，' +
+        (isNaN(when.getTime()) ? '' : when.toLocaleString('zh-CN', {
+          month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+        })) + '）。要恢复吗？';
+    }
+    if (adminDraftBanner) adminDraftBanner.removeAttribute('hidden');
+  }
+
+  function clearAdminDraft() {
+    if (!window.WSBlogDraft) return;
+    window.WSBlogDraft.remove(window.WSBlogDraft.key(ADMIN_DRAFT_NS, editingSlug));
+    window.WSBlogDraft.remove(window.WSBlogDraft.key(ADMIN_DRAFT_NS, ''));
+  }
+
+  if (adminDraftRestore) {
+    adminDraftRestore.addEventListener('click', function () {
+      if (!pendingAdminDraft) return;
+      var data = pendingAdminDraft;
+      if (fieldTitle) fieldTitle.value = data.title || '';
+      if (fieldSlug) fieldSlug.value = data.slug || '';
+      if (fieldSummary) fieldSummary.value = data.summary || '';
+      if (fieldTags) fieldTags.value = data.tags || '';
+      if (fieldContent) fieldContent.value = data.content_md || '';
+      if (fieldStatus && data.status) fieldStatus.value = data.status;
+      hideAdminDraftBanner();
+      setAdminStatus('已恢复本机草稿', 'saved');
+      if (fieldTitle) fieldTitle.focus();
+    });
+  }
+
+  if (adminDraftDiscard) {
+    adminDraftDiscard.addEventListener('click', function () {
+      clearAdminDraft();
+      hideAdminDraftBanner();
+      setAdminStatus('', 'idle');
+      toast('已丢弃本机草稿');
     });
   }
 
@@ -318,8 +521,12 @@
       .then(function (rows) {
         if (!rows || !rows.length) throw new Error('保存失败：返回为空（可能没有管理员权限）');
         toast(payload.status === 'published' ? '已发布' : '草稿已保存');
+        /* 已落到云端，清掉本机草稿（含新建时用的 new 槽位） */
+        clearAdminDraft();
+        hideAdminDraftBanner();
+        setAdminStatus(payload.status === 'published' ? '已发布到云端' : '已保存到云端', 'saved');
         resetForm();
-        return Promise.all([loadPosts(), loadStats()]);
+        return Promise.all([loadPosts(), loadStats(), loadReview()]);
       })
       .catch(function () {
         /* api() 已提示 */
@@ -341,7 +548,14 @@
       savePost('published');
     });
   }
-  if (resetBtn) resetBtn.addEventListener('click', resetForm);
+  if (resetBtn) {
+    resetBtn.addEventListener('click', function () {
+      if (adminDraft) adminDraft.discard();
+      clearAdminDraft();
+      hideAdminDraftBanner();
+      resetForm();
+    });
+  }
 
   /* ---------------- 插入图片（上传到云存储） ---------------- */
 
@@ -458,22 +672,43 @@
         previewBox.setAttribute('hidden', '');
       }
       if (fieldContent) fieldContent.focus();
+      /* 载入后检查是否有比云端更新的本机草稿 */
+      checkAdminDraft();
       return row;
     });
   }
 
   function loadPosts() {
-    return api(C.db().rpc('admin_posts'), '文章列表加载失败').then(function (rows) {
-      var list = rows || [];
+    return api(
+      C.db().rpc('admin_posts_page', {
+        p_search: postsState.search || null,
+        p_status: postsState.status === 'all' ? null : postsState.status,
+        p_limit: postsState.pageSize,
+        p_offset: (postsState.page - 1) * postsState.pageSize,
+      }),
+      '文章列表加载失败'
+    ).then(function (data) {
+      var page = pageRows(data, '文章列表加载失败');
+      var list = page.rows || [];
+      var total = Number(page.total) || 0;
+      var totalPages = Math.max(1, Math.ceil(total / postsState.pageSize));
+      if (postsState.page > totalPages) {
+        postsState.page = totalPages;
+        return loadPosts();
+      }
+      postsState.total = total;
       allPosts = list;
-      setText(postCountEl, list.length);
+      setText(postCountEl, total);
       if (postsBody) {
+        var filtered = postsState.search || postsState.status !== 'all';
         postsBody.innerHTML = list.length
           ? list.map(postRow).join('')
-          : '<tr><td colspan="5" class="admin-empty">还没有文章，用左边的编辑器写下第一篇。</td></tr>';
+          : '<tr><td colspan="5" class="admin-empty">' +
+            (filtered ? '没有匹配的文章，换个关键词或状态试试。' : '还没有文章，用左边的编辑器写下第一篇。') +
+            '</td></tr>';
       }
       bindPostActions(list);
-      renderReview();
+      renderPager(postPagerEl, postsState, loadPosts);
       return list;
     });
   }
@@ -503,7 +738,7 @@
       return api(C.db().from('cloud_posts').update(patch).eq('slug', slug).select(), '操作失败').then(function (rows) {
         if (!rows || !rows.length) throw new Error('没有权限或文章不存在');
         toast(status === 'published' ? '已发布' : '已转为草稿');
-        return Promise.all([loadPosts(), loadStats()]);
+        return Promise.all([loadPosts(), loadStats(), loadReview()]);
       }).catch(function () {});
     }
 
@@ -529,7 +764,7 @@
             if (!rows || !rows.length) throw new Error('没有权限或文章不存在');
             toast('文章已删除');
             if (editingSlug === slug) resetForm();
-            return Promise.all([loadPosts(), loadStats()]);
+            return Promise.all([loadPosts(), loadStats(), loadReview()]);
           })
           .catch(function () {});
       });
@@ -548,7 +783,7 @@
       var payload = res && typeof res === 'object' ? res : {};
       if (payload.ok !== true) throw new Error(payload.error || '审核未生效');
       toast(REVIEW_VERB[action] || '已处理');
-      return Promise.all([loadPosts(), loadStats()]);
+      return Promise.all([loadPosts(), loadStats(), loadReview()]);
     });
   }
 
@@ -596,29 +831,67 @@
     );
   }
 
-  function renderReview() {
-    var posts = allPosts || [];
-    var pending = posts.filter(function (p) { return p.status === 'pending'; });
-    var handled = posts.filter(function (p) {
-      return p.status === 'rejected' || (p.status === 'published' && p.reviewed_at);
-    }).sort(function (a, b) {
-      return String(b.reviewed_at || '').localeCompare(String(a.reviewed_at || ''));
-    }).slice(0, 40);
+  /**
+   * 内容审核：待审与已处理各自单独分页拉取（不再复用文章列表的内存快照）。
+   */
+  function loadReview() {
+    return Promise.all([
+      api(
+        C.db().rpc('admin_posts_page', {
+          p_search: null,
+          p_status: 'pending',
+          p_limit: pendingState.pageSize,
+          p_offset: (pendingState.page - 1) * pendingState.pageSize,
+        }),
+        '待审核列表加载失败'
+      ),
+      api(
+        C.db().rpc('admin_posts_page', {
+          p_search: null,
+          p_status: 'reviewed',
+          p_limit: reviewedState.pageSize,
+          p_offset: (reviewedState.page - 1) * reviewedState.pageSize,
+        }),
+        '已处理列表加载失败'
+      ),
+    ]).then(function (results) {
+      var pendingPage = pageRows(results[0], '待审核列表加载失败');
+      var reviewedPage = pageRows(results[1], '已处理列表加载失败');
+      var pending = pendingPage.rows || [];
+      var handled = reviewedPage.rows || [];
 
-    setText(reviewCountEl, pending.length);
-    setReviewBadge(pending.length);
+      pendingState.total = Number(pendingPage.total) || 0;
+      reviewedState.total = Number(reviewedPage.total) || 0;
 
-    if (reviewBody) {
-      reviewBody.innerHTML = pending.length
-        ? pending.map(reviewRow).join('')
-        : '<tr><td colspan="5" class="admin-empty">当前没有待审核的投稿。</td></tr>';
-    }
-    if (reviewedBody) {
-      reviewedBody.innerHTML = handled.length
-        ? handled.map(reviewedRow).join('')
-        : '<tr><td colspan="5" class="admin-empty">还没有审核记录。</td></tr>';
-    }
-    bindReviewActions();
+      var pendingPages = Math.max(1, Math.ceil(pendingState.total / pendingState.pageSize));
+      if (pendingState.page > pendingPages) {
+        pendingState.page = pendingPages;
+        return loadReview();
+      }
+      var reviewedPages = Math.max(1, Math.ceil(reviewedState.total / reviewedState.pageSize));
+      if (reviewedState.page > reviewedPages) {
+        reviewedState.page = reviewedPages;
+        return loadReview();
+      }
+
+      setText(reviewCountEl, pendingState.total);
+      setReviewBadge(pendingState.total);
+
+      if (reviewBody) {
+        reviewBody.innerHTML = pending.length
+          ? pending.map(reviewRow).join('')
+          : '<tr><td colspan="5" class="admin-empty">当前没有待审核的投稿。</td></tr>';
+      }
+      if (reviewedBody) {
+        reviewedBody.innerHTML = handled.length
+          ? handled.map(reviewedRow).join('')
+          : '<tr><td colspan="5" class="admin-empty">还没有审核记录。</td></tr>';
+      }
+      bindReviewActions();
+      renderPager(reviewPagerEl, pendingState, loadReview);
+      renderPager(reviewedPagerEl, reviewedState, loadReview);
+      return { pending: pendingState.total, reviewed: reviewedState.total };
+    });
   }
 
   /** 在该行下方展开「驳回理由」输入行。 */
@@ -705,7 +978,7 @@
             if (!rows || !rows.length) throw new Error('没有权限或文章不存在');
             toast('投稿已删除');
             if (editingSlug === slug) resetForm();
-            return Promise.all([loadPosts(), loadStats()]);
+            return Promise.all([loadPosts(), loadStats(), loadReview()]);
           })
           .catch(function () { btn.disabled = false; });
       });
@@ -718,9 +991,13 @@
     var hidden = item.status && item.status !== 'visible';
     var parentReply = '';
     if (item.parent_id) {
-      var parent = (allComments || []).find(function (row) { return row.id === item.parent_id; });
-      parentReply = '<div class="admin-cell__sub">↩ 回复 @' +
-        esc((parent && parent.author_name) || '#' + item.parent_id) + '</div>';
+      /* 父评论可能不在当前页，服务端已把父评论作者名一并带出来 */
+      var parentName = item.parent_author || null;
+      if (!parentName) {
+        var parent = (allComments || []).find(function (row) { return row.id === item.parent_id; });
+        parentName = (parent && parent.author_name) || '#' + item.parent_id;
+      }
+      parentReply = '<div class="admin-cell__sub">↩ 回复 @' + esc(parentName) + '</div>';
     }
     return (
       '<tr data-comment-row="' + esc(item.id) + '">' +
@@ -740,14 +1017,12 @@
 
   function renderComments() {
     if (!commentsBody) return;
-    var list = allComments.filter(function (item) {
-      if (commentFilter === 'all') return true;
-      var hidden = item.status && item.status !== 'visible';
-      return commentFilter === 'hidden' ? hidden : !hidden;
-    });
+    var list = allComments || [];
+    var filtered = commentsState.search || commentsState.status !== 'all';
     commentsBody.innerHTML = list.length
       ? list.map(commentRow).join('')
-      : '<tr><td colspan="5" class="admin-empty">' + (allComments.length ? '这个筛选下没有评论。' : '还没有评论。') + '</td></tr>';
+      : '<tr><td colspan="5" class="admin-empty">' +
+        (filtered ? '这个筛选下没有评论。' : '还没有评论。') + '</td></tr>';
     bindCommentActions();
   }
 
@@ -783,23 +1058,39 @@
 
   function loadComments() {
     return api(
-      C.db().from('comments').select('id, parent_id, post_slug, author_name, content, status, created_at').order('created_at', { ascending: false }).limit(300),
+      C.db().rpc('admin_comments_page', {
+        p_search: commentsState.search || null,
+        p_status: commentsState.status === 'all' ? null : commentsState.status,
+        p_limit: commentsState.pageSize,
+        p_offset: (commentsState.page - 1) * commentsState.pageSize,
+      }),
       '评论加载失败'
-    ).then(function (rows) {
-      allComments = rows || [];
-      setText(commentCountEl, allComments.length);
+    ).then(function (data) {
+      var page = pageRows(data, '评论加载失败');
+      var list = page.rows || [];
+      var total = Number(page.total) || 0;
+      var totalPages = Math.max(1, Math.ceil(total / commentsState.pageSize));
+      if (commentsState.page > totalPages) {
+        commentsState.page = totalPages;
+        return loadComments();
+      }
+      commentsState.total = total;
+      allComments = list;
+      setText(commentCountEl, total);
       renderComments();
-      return allComments;
+      renderPager(commentPagerEl, commentsState, loadComments);
+      return list;
     });
   }
 
   qa('[data-comment-filter]').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      commentFilter = btn.getAttribute('data-comment-filter') || 'all';
+      commentsState.status = btn.getAttribute('data-comment-filter') || 'all';
+      commentsState.page = 1;
       qa('[data-comment-filter]').forEach(function (other) {
         other.classList.toggle('is-active', other === btn);
       });
-      renderComments();
+      loadComments();
     });
   });
 
@@ -893,14 +1184,33 @@
   }
 
   function loadUsers() {
-    return api(C.db().rpc('admin_users'), '用户列表加载失败').then(function (rows) {
-      var list = rows || [];
+    return api(
+      C.db().rpc('admin_users_page', {
+        p_search: usersState.search || null,
+        p_status: usersState.status === 'all' ? null : usersState.status,
+        p_limit: usersState.pageSize,
+        p_offset: (usersState.page - 1) * usersState.pageSize,
+      }),
+      '用户列表加载失败'
+    ).then(function (data) {
+      var page = pageRows(data, '用户列表加载失败');
+      var list = page.rows || [];
+      var total = Number(page.total) || 0;
+      var totalPages = Math.max(1, Math.ceil(total / usersState.pageSize));
+      if (usersState.page > totalPages) {
+        usersState.page = totalPages;
+        return loadUsers();
+      }
+      usersState.total = total;
       allUsers = list;
       if (!usersBody) return list;
+      var filtered = usersState.search || usersState.status !== 'all';
       usersBody.innerHTML = list.length
         ? list.map(userRow).join('')
-        : '<tr><td colspan="7" class="admin-empty">还没有用户注册。</td></tr>';
+        : '<tr><td colspan="7" class="admin-empty">' +
+          (filtered ? '没有匹配的账号。' : '还没有用户注册。') + '</td></tr>';
       bindUserActions(list);
+      renderPager(userPagerEl, usersState, loadUsers);
       return list;
     });
   }
@@ -1050,7 +1360,14 @@
   /* ---------------- 统一刷新 ---------------- */
 
   function refreshAll() {
-    return Promise.all([loadStats(), loadPosts(), loadComments(), loadUsers(), loadEmails()]);
+    return Promise.all([
+      loadStats(),
+      loadPosts(),
+      loadReview(),
+      loadComments(),
+      loadUsers(),
+      loadEmails(),
+    ]);
   }
 
   var refreshBtn = q('[data-admin-refresh]');
@@ -1066,12 +1383,21 @@
     });
   }
 
+  /* ---------------- 搜索 / 筛选接线 ---------------- */
+
+  bindSearch(postSearchEl, postsState, loadPosts);
+  bindSelect(postStatusEl, postsState, loadPosts);
+  bindSearch(commentSearchEl, commentsState, loadComments);
+  bindSearch(userSearchEl, usersState, loadUsers);
+  bindSelect(userStatusEl, usersState, loadUsers);
+
   /* ---------------- 启动 ---------------- */
 
   resetForm();
 
   C.booted().then(function () {
     if (!C.guardAdmin()) return;
+    setupAdminDraft();
     showPanel('posts');
     refreshAll();
     syncSlugs();

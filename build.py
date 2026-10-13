@@ -57,6 +57,10 @@ from wsblog.templates.pages import (  # noqa: E402
     home_page,
     login_page,
     not_found_page,
+    notifications_page,
+    offline_page,
+    page_url,
+    paginate,
     post_page,
     project_detail_page,
     projects_page,
@@ -78,10 +82,13 @@ ASSET_SCRIPTS = (
     "theme.js",
     "app.js",
     "cloud.js",
+    "notify.js",
     "cloud-markdown.js",
     "auth.js",
     "interact.js",
     "account.js",
+    "notifications.js",
+    "draft.js",
     "write.js",
     "admin.js",
     "cloud-posts.js",
@@ -195,6 +202,22 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     tags = collect_tags(all_posts)
     about_data = load_page(CONTENT_DIR, "about")
 
+    options = config.get("options") or {}
+
+    def option_int(key: str, fallback: int) -> int:
+        try:
+            return int(options.get(key, fallback))
+        except (TypeError, ValueError):
+            return fallback
+
+    # 首页只放「最新 N 篇」，剩下的交给归档页 —— 否则文章一多首页会无限长。
+    home_posts_count = option_int("homePosts", 8)
+    home_posts = all_posts[:home_posts_count] if home_posts_count > 0 else all_posts
+
+    # 归档页分页（archive.html / archive-2.html …）
+    archive_per_page = option_int("postsPerPage", 20)
+    archive_pages, archive_total_pages = paginate(all_posts, archive_per_page)
+
     # --- 首页 ---
     write(
         "index.html",
@@ -206,7 +229,14 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             current="index.html",
             canonical="/",
             cloud=cloud,
-            content=home_page(config=config, posts=all_posts, projects=projects, tags=tags, root=""),
+            content=home_page(
+                config=config,
+                posts=home_posts,
+                projects=projects,
+                tags=tags,
+                root="",
+                total_posts=len(all_posts),
+            ),
         ),
     )
 
@@ -239,6 +269,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="projects.html",
                 canonical=f"/{project['url']}",
                 cloud=cloud,
+                og_type="article",
+                og_image=str(project.get("cover") or ""),
                 content=project_detail_page(config=config, project=project, root=root_prefix(1)),
             ),
         )
@@ -258,20 +290,39 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         ),
     )
 
-    # --- 归档页 ---
-    write(
-        "archive.html",
-        layout(
-            config=config,
-            title="归档",
-            description="全部文章按发布时间归档。",
-            root="",
-            current="archive.html",
-            canonical="/archive.html",
-            cloud=cloud,
-            content=archive_page(config=config, posts=all_posts, root=""),
-        ),
-    )
+    # --- 归档页（分页：archive.html / archive-2.html …）---
+    for index, chunk in enumerate(archive_pages):
+        page_no = index + 1
+        rel_links = ""
+        if page_no > 1:
+            rel_links += f'<link rel="prev" href="{page_url("archive.html", page_no - 1)}">\n'
+        if page_no < archive_total_pages:
+            rel_links += f'<link rel="next" href="{page_url("archive.html", page_no + 1)}">\n'
+        write(
+            page_url("archive.html", page_no),
+            layout(
+                config=config,
+                title="归档" if page_no == 1 else f"归档 · 第 {page_no} 页",
+                description=(
+                    "全部文章按发布时间归档。"
+                    if page_no == 1
+                    else f"全部文章按发布时间归档，第 {page_no} 页。"
+                ),
+                root="",
+                current="archive.html",
+                canonical=f"/{page_url('archive.html', page_no)}",
+                cloud=cloud,
+                extra_head=rel_links.strip(),
+                content=archive_page(
+                    config=config,
+                    posts=chunk,
+                    root="",
+                    page=page_no,
+                    total_pages=archive_total_pages,
+                    total=len(all_posts),
+                ),
+            ),
+        )
 
     # --- 标签总览 ---
     write(
@@ -348,13 +399,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         if post.get("cover"):
             json_ld["image"] = post["cover"]
         extra_head = (
-            '<meta property="og:type" content="article">\n'
             f'<meta property="article:published_time" content="{iso_date(post["date"])}">\n'
-            + (
-                f'<meta property="og:image" content="{esc(post["cover"])}">\n'
-                if post.get("cover")
-                else ""
-            )
             + f"{article_meta}\n"
             + '<script type="application/ld+json">'
             + json.dumps(json_ld, ensure_ascii=False, separators=(",", ":"))
@@ -374,6 +419,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 extra_head=extra_head,
                 cloud=cloud,
                 scripts=["interact.js"],
+                og_type="article",
+                og_image=str(post.get("cover") or ""),
                 content=post_page(
                     config=config, post=post, prev_post=prev_post, next_post=next_post,
                     related=related, root=root_prefix(1),
@@ -420,7 +467,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["cloud-markdown.js", "upload.js", "write.js"],
+                scripts=["cloud-markdown.js", "upload.js", "draft.js", "write.js"],
                 content=write_page(config=config, root=""),
             ),
         )
@@ -434,8 +481,21 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["cloud-markdown.js", "upload.js", "admin.js"],
+                scripts=["cloud-markdown.js", "upload.js", "draft.js", "admin.js"],
                 content=admin_page(config=config, root=""),
+            ),
+        )
+        write(
+            "notifications.html",
+            layout(
+                config=config,
+                title="通知中心",
+                description="有人回复你、评论你的文章，或投稿有了审核结果时的站内提醒。",
+                root="",
+                current="",
+                cloud=True,
+                scripts=["notifications.js"],
+                content=notifications_page(config=config, root=""),
             ),
         )
         write(
@@ -476,7 +536,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             root="",
             current="",
             cloud=cloud,
-            content=not_found_page(root=""),
+            content=not_found_page(root="", posts=all_posts, tags=tags),
         ),
     )
 
@@ -574,7 +634,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
 
     # --- RSS / sitemap / robots ---
     write("feed.xml", build_feed(config, all_posts))
-    write("sitemap.xml", build_sitemap(config, posts=all_posts, projects=projects, tags=tags))
+    write("sitemap.xml", build_sitemap(config, posts=all_posts, projects=projects, tags=tags, archive_pages=archive_total_pages))
     robots = "User-agent: *\nAllow: /\n"
     if config.get("url"):
         robots += f"Sitemap: {str(config['url']).rstrip('/')}/sitemap.xml\n"
@@ -583,11 +643,38 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     # --- GitHub Pages 用，避免下划线目录被 Jekyll 忽略 ---
     write(".nojekyll", "")
 
+    # --- PWA：manifest / Service Worker / 离线页 ---
+    write("site.webmanifest", build_manifest(config))
+    sw_source = os.path.join(SRC_DIR, "sw.js")
+    if os.path.isfile(sw_source):
+        copy_file(sw_source, "sw.js")
+    write(
+        "offline.html",
+        layout(
+            config=config,
+            title="离线",
+            description="当前没有网络连接。",
+            root="",
+            current="",
+            cloud=cloud,
+            content=offline_page(config=config, root=""),
+        ),
+    )
+
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    page_count = 5 + len(posts) + len(projects) + len(tags) + (5 if cloud else 0)
+    # 核心页（首页 / 项目 / 关于 / 标签 / 404）+ 归档各页 + 文章 / 项目 / 标签详情 + 云端页面
+    page_count = (
+        5
+        + archive_total_pages
+        + len(all_posts)
+        + len(projects)
+        + len(tags)
+        + (6 if cloud else 0)
+    )
     drafts_note = "已包含" if any(post["draft"] for post in posts) else "未包含"
 
-    print(f"· 文章 {len(posts)} 篇（含草稿 {drafts_note}）")
+    print(f"· 文章 {len(all_posts)} 篇（静态 {len(posts)} + 云端 {len(cloud_posts)}，含草稿 {drafts_note}）")
+    print(f"· 首页展示 {len(home_posts)} 篇 / 归档每页 {archive_per_page or '不限'} 篇（共 {archive_total_pages} 页）")
     print(f"· 项目 {len(projects)} 个")
     print(f"· 标签 {len(tags)} 个")
     print(f"· 页面 {page_count} 个")
@@ -603,6 +690,35 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         "elapsed_ms": elapsed_ms,
         "nested_anchors": list(nested_anchor_issues),
     }
+
+
+# ---------------- PWA ----------------
+
+def build_manifest(config: dict) -> str:
+    site = str(config.get("title") or "Blog")
+    manifest = {
+        "name": site,
+        "short_name": site[:12],
+        "description": str(config.get("description") or ""),
+        "lang": str(config.get("lang") or "zh-CN"),
+        # 相对路径：无论部署在域名根还是子路径（GitHub Pages），都以 manifest 所在目录为基准
+        "start_url": "./",
+        "scope": "./",
+        "display": "standalone",
+        "theme_color": "#0a0c11",
+        "background_color": "#0a0c11",
+        "icons": [
+            {"src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {
+                "src": "assets/icon-maskable-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "maskable",
+            },
+        ],
+    }
+    return json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
 
 
 # ---------------- RSS ----------------
@@ -643,7 +759,7 @@ def build_feed(config: dict, posts: list) -> str:
 
 # ---------------- sitemap ----------------
 
-def build_sitemap(config: dict, *, posts: list, projects: list, tags: list) -> str:
+def build_sitemap(config: dict, *, posts: list, projects: list, tags: list, archive_pages: int = 1) -> str:
     site = str(config.get("url") or "https://example.com").rstrip("/")
     urls = [
         {"loc": "/", "priority": "1.0"},
@@ -651,6 +767,10 @@ def build_sitemap(config: dict, *, posts: list, projects: list, tags: list) -> s
         {"loc": "/archive.html", "priority": "0.6"},
         {"loc": "/tags.html", "priority": "0.6"},
         {"loc": "/about.html", "priority": "0.6"},
+    ]
+    urls += [
+        {"loc": f"/{page_url('archive.html', n)}", "priority": "0.4"}
+        for n in range(2, max(1, archive_pages) + 1)
     ]
     urls += [
         {"loc": f"/{post['url']}", "lastmod": iso_date(post["date"])[:10], "priority": "0.9"}

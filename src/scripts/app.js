@@ -66,6 +66,104 @@
     });
   })();
 
+  /* ================= 文章分享 ================= */
+  (function () {
+    var blocks = $$('[data-share]');
+    if (!blocks.length) return;
+
+    function canonicalUrl() {
+      var link = doc.querySelector('link[rel="canonical"]');
+      var href = link && link.getAttribute('href');
+      return href && /^https?:/i.test(href) ? href : location.href;
+    }
+
+    function pageTitle() {
+      var node = doc.querySelector('[data-post-title]');
+      var title = node && node.getAttribute('data-post-title');
+      if (title) return title;
+      var head = doc.querySelector('.article-head__title');
+      if (head && head.textContent.trim()) return head.textContent.trim();
+      return (doc.title || '').split(' · ')[0] || doc.title || '';
+    }
+
+    function copyText(text, block) {
+      function ok() { toast('链接已复制'); }
+      function fail() { toast('复制失败，请手动复制地址栏'); }
+      function fallback() {
+        try {
+          var ta = doc.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.cssText = 'position:fixed;top:-9999px;opacity:0';
+          doc.body.appendChild(ta);
+          ta.select();
+          var done = doc.execCommand('copy');
+          doc.body.removeChild(ta);
+          done ? ok() : fail();
+        } catch (err) {
+          fail();
+        }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok).catch(fallback);
+      } else {
+        fallback();
+      }
+    }
+
+    // 云文章详情页的标题是异步写入的，所以分享链接与标题在「每次交互前」重算，
+    // 而不是只在加载时算一次（否则分享出去的会是「加载中…」或干脆是空标题）。
+    function refresh(block) {
+      var url = canonicalUrl();
+      var title = pageTitle();
+      var weibo = block.querySelector('[data-share-action="weibo"]');
+      var x = block.querySelector('[data-share-action="x"]');
+      if (weibo) {
+        weibo.href =
+          'https://service.weibo.com/share/share.php?url=' +
+          encodeURIComponent(url) +
+          '&title=' +
+          encodeURIComponent(title);
+      }
+      if (x) {
+        x.href =
+          'https://twitter.com/intent/tweet?url=' +
+          encodeURIComponent(url) +
+          '&text=' +
+          encodeURIComponent(title);
+      }
+      return { url: url, title: title };
+    }
+
+    blocks.forEach(function (block) {
+      if (!navigator.share) {
+        var nativeBtn = block.querySelector('[data-share-action="native"]');
+        if (nativeBtn) nativeBtn.remove();
+      }
+      refresh(block);
+
+      block.addEventListener('mouseenter', function () { refresh(block); });
+      block.addEventListener('focusin', function () { refresh(block); });
+
+      block.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-share-action]');
+        if (!btn) return;
+        var action = btn.getAttribute('data-share-action');
+        var meta = refresh(block);
+
+        if (action === 'copy') {
+          e.preventDefault();
+          copyText(meta.url);
+        } else if (action === 'native') {
+          e.preventDefault();
+          if (navigator.share) {
+            navigator.share({ title: meta.title, url: meta.url }).catch(function () {});
+          }
+        }
+      });
+    });
+  })();
+
   /* ================= 站内搜索 ================= */
   (function () {
     var overlay = $('[data-search-overlay]');
@@ -249,26 +347,60 @@
       }
     }
 
-    function open(prefill) {
+    /* ---------- 地址栏同步（?q=）----------
+       搜索状态写进 URL，才能「把搜索结果发给别人 / 刷新不丢 / 后退能退出搜索」。
+       用 replaceState 而不是 pushState：逐字输入不该在历史里堆几十条记录，
+       否则用户按后退要按上百次才能离开页面。 */
+    function syncUrl(query) {
+      if (!window.history || !history.replaceState) return;
+      try {
+        var url = new URL(window.location.href);
+        var value = (query || '').trim();
+        if (value) url.searchParams.set('q', value);
+        else url.searchParams.delete('q');
+        history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+      } catch (e) {
+        /* 忽略 */
+      }
+    }
+
+    function queryFromUrl() {
+      try {
+        return new URLSearchParams(window.location.search).get('q') || '';
+      } catch (e) {
+        return '';
+      }
+    }
+
+    function open(prefill, skipUrl) {
       overlay.setAttribute('data-open', '');
       doc.body.style.overflow = 'hidden';
       input.value = prefill || '';
       render(input.value);
+      if (!skipUrl) syncUrl(input.value);
       loadIndex().then(function () {
         if (overlay.hasAttribute('data-open')) render(input.value);
       });
       setTimeout(function () { input.focus(); }, 30);
     }
 
-    function close() {
+    function close(skipUrl) {
       overlay.removeAttribute('data-open');
       doc.body.style.overflow = '';
       input.value = '';
       activeIndex = -1;
+      if (!skipUrl) syncUrl('');
     }
 
     $$('[data-search-open]').forEach(function (btn) {
       btn.addEventListener('click', function () { open(); });
+    });
+
+    // 前进 / 后退：地址栏里有 q 就开搜索并回填，没有就关掉
+    window.addEventListener('popstate', function () {
+      var q = queryFromUrl();
+      if (q) open(q, true);
+      else if (overlay.hasAttribute('data-open')) close(true);
     });
 
     overlay.addEventListener('click', function (e) {
@@ -279,6 +411,7 @@
     input.addEventListener('input', function () {
       clearTimeout(debounceTimer);
       var value = input.value;
+      syncUrl(value);
       debounceTimer = setTimeout(function () { render(value); }, 90);
     });
 
@@ -325,13 +458,8 @@
     });
 
     // 支持从地址栏带参数直达搜索，例如 /index.html?q=性能
-    try {
-      var params = new URLSearchParams(window.location.search);
-      var q = params.get('q');
-      if (q) open(q);
-    } catch (e) {
-      /* 忽略 */
-    }
+    var initialQuery = queryFromUrl();
+    if (initialQuery) open(initialQuery, true);
   })();
 
   /* ================= 首页标签筛选 ================= */
@@ -551,6 +679,27 @@
           }
         }
       );
+    });
+  })();
+
+  /* ================= PWA：Service Worker 注册 ================= */
+  (function () {
+    if (!('serviceWorker' in navigator)) return;
+    // 镜像域名只负责跳转到正式域名，不要在那边缓存页面 ——
+    // 判断方式：canonical 指向的源和当前源不一致，就说明这是镜像。
+    var canonicalLink = doc.querySelector('link[rel="canonical"]');
+    var canonicalHref = canonicalLink && canonicalLink.getAttribute('href');
+    if (canonicalHref) {
+      try {
+        if (new URL(canonicalHref, location.href).origin !== location.origin) return;
+      } catch (err) {
+        return;
+      }
+    }
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register(ROOT + 'sw.js').catch(function (err) {
+        console.warn('[sw] 注册失败', err && err.message);
+      });
     });
   })();
 

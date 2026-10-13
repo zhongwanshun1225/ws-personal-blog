@@ -250,12 +250,16 @@ def layout(
     cloud: bool = False,
     vendor: list | None = None,
     scripts: list | None = None,
+    og_type: str = "website",
+    og_image: str = "",
 ) -> str:
     """渲染完整页面。
 
     cloud    —— 是否接入云端（注入 cloud-config.js / SDK / cloud.js，并在顶栏放登录态插槽）
     vendor   —— 需要额外加载的 CDN 库，取值 "marked" / "highlight"
     scripts  —— 该页专属的本地脚本文件名（assets/ 下的相对名，按顺序注入）
+    og_type  —— Open Graph 类型（列表页 website，文章详情 article）
+    og_image —— 分享缩略图。留空时用站点默认图；文章页传 cover 字段
     """
     site_title = config.get("title") or "Blog"
     page_title = f"{title} · {site_title}" if title and title != site_title else site_title
@@ -263,6 +267,22 @@ def layout(
 
     site_url = str(config.get("url") or "").rstrip("/") if config.get("url") else ""
     url = f"{site_url}{canonical}" if site_url and canonical else ""
+
+    # 分享缩略图：文章封面优先，否则退回站点默认图（构建脚本会生成 og-default.png）
+    image_value = str(og_image or "").strip()
+    if not image_value and site_url:
+        image_value = f"{site_url}/assets/og-default.png"
+    image_meta = ""
+    if image_value:
+        image_meta = "\n".join(
+            [
+                f'<meta property="og:image" content="{esc(image_value)}">',
+                '<meta property="og:image:width" content="1200">',
+                '<meta property="og:image:height" content="630">',
+                f'<meta property="og:image:alt" content="{esc(f"{site_title} 分享图")}">',
+                f'<meta name="twitter:image" content="{esc(image_value)}">',
+            ]
+        )
 
     # ---------- 导航 ----------
     nav_parts, mobile_nav_parts = [], []
@@ -312,8 +332,11 @@ def layout(
             '<span class="auth-btn__dot"></span>登录 / 注册</a>'
             "</div>"
         )
+        # 通知铃铛：登录后由 notify.js 渲染（未登录时保持隐藏）
+        notify_slot = '<div class="notify-slot" data-notify-slot hidden></div>'
     else:
         auth_slot = ""
+        notify_slot = ""
 
     # ---------- 脚本 ----------
     # 全部用 defer：执行顺序 = 文档顺序，所以 cloud-config → vendor → cloud.js 是可靠的。
@@ -336,6 +359,7 @@ def layout(
         if sdk:
             script_tags.append(f'<script src="{_vendor_src(sdk)}" defer></script>')
         script_tags.append(f'<script src="{root}assets/cloud.js" defer></script>')
+        script_tags.append(f'<script src="{root}assets/notify.js" defer></script>')
     script_tags.append(f'<script src="{root}assets/app.js" defer></script>')
     for name in scripts or []:
         script_tags.append(f'<script src="{root}assets/{esc(name)}" defer></script>')
@@ -357,15 +381,19 @@ def layout(
 <meta name="generator" content="WS Blog (static generator)">
 {theme_boot}
 {canonical_meta}
-<meta property="og:type" content="website">
+<meta property="og:type" content="{esc(og_type)}">
 <meta property="og:site_name" content="{esc(site_title)}">
 <meta property="og:title" content="{esc(page_title)}">
 <meta property="og:description" content="{esc(desc)}">
+<meta property="og:locale" content="zh_CN">
 {og_url_meta}
+{image_meta}
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{esc(page_title)}">
 <meta name="twitter:description" content="{esc(desc)}">
 <link rel="icon" href="{build_favicon(config)}">
+<link rel="apple-touch-icon" href="{root}assets/apple-touch-icon.png">
+<link rel="manifest" href="{root}site.webmanifest">
 <link rel="alternate" type="application/rss+xml" title="{esc(site_title)} RSS" href="{root}feed.xml">
 <!-- 字体已在 assets/main.css 里以本地 @font-face 声明，不再请求 Google Fonts
      （fonts.googleapis.com / fonts.gstatic.com 在大陆不可达且阻塞渲染） -->
@@ -390,6 +418,7 @@ def layout(
         {icons["search"]}<span>搜索</span><kbd>Ctrl K</kbd>
       </button>
       {appearance_html}
+      {notify_slot}
       {auth_slot}
       {social_html}
       <button class="nav-toggle" type="button" data-nav-toggle aria-label="展开菜单" aria-expanded="false">{icons["menu"]}</button>

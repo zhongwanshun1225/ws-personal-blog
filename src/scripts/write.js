@@ -49,11 +49,21 @@
   var noteBox = q('[data-write-note]');
   var listEl = q('[data-my-posts]');
   var countEl = q('[data-my-post-count]');
+  var draftBanner = q('[data-draft-banner]');
+  var draftBannerText = q('[data-draft-banner-text]');
+  var draftRestoreBtn = q('[data-draft-restore]');
+  var draftDiscardBtn = q('[data-draft-discard]');
+  var statusEl = q('[data-write-status]');
 
   var busy = false;
   var editingSlug = '';
   var editingStatus = '';
   var myPosts = [];
+
+  /* 本地草稿控制器（draft.js 注入；脚本缺失时退化为不自动保存） */
+  var draftCtrl = null;
+  var pendingDraft = null;
+  var DRAFT_NS = 'write';
 
   var STATUS_META = {
     draft: { label: '草稿', cls: 'status-badge--draft' },
@@ -106,6 +116,147 @@
   function slugParam() {
     var match = /[?&]slug=([^&]+)/.exec(location.search || '');
     return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  /* ---------------- 本地草稿（自动保存 / 恢复） ---------------- */
+
+  function draftKeyNow() {
+    return window.WSBlogDraft
+      ? window.WSBlogDraft.key(DRAFT_NS, editingSlug)
+      : '';
+  }
+
+  function collectDraft() {
+    return {
+      title: (fieldTitle && fieldTitle.value) || '',
+      slug: (fieldSlug && fieldSlug.value) || '',
+      summary: (fieldSummary && fieldSummary.value) || '',
+      tags: (fieldTags && fieldTags.value) || '',
+      content_md: (fieldContent && fieldContent.value) || '',
+    };
+  }
+
+  function draftEmpty(data) {
+    return !(
+      String(data.title || '').trim() || String(data.content_md || '').trim()
+    );
+  }
+
+  function setStatus(text, level) {
+    if (!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.setAttribute('data-level', level || 'idle');
+  }
+
+  function setupDraft() {
+    if (!window.WSBlogDraft || draftCtrl) return;
+    draftCtrl = window.WSBlogDraft.attach({
+      form: form,
+      keyFn: draftKeyNow,
+      collect: collectDraft,
+      isEmpty: draftEmpty,
+      onStatus: setStatus,
+    });
+  }
+
+  function formatWhen(value) {
+    var date = new Date(value);
+    if (isNaN(date.getTime())) return '';
+    return date.toLocaleString('zh-CN', {
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    });
+  }
+
+  function hideDraftBanner() {
+    pendingDraft = null;
+    if (draftBanner) draftBanner.setAttribute('hidden', '');
+  }
+
+  function showDraftBanner(data) {
+    pendingDraft = data;
+    if (!draftBanner) return;
+    var title = String(data.title || '').trim() || '（未命名）';
+    var size = String(data.content_md || '').length;
+    if (draftBannerText) {
+      draftBannerText.textContent =
+        '检测到本机保存的草稿「' + title + '」（' + size + ' 字，' +
+        formatWhen(data.savedAt) + '），比云端版本更新。要恢复吗？';
+    }
+    draftBanner.removeAttribute('hidden');
+  }
+
+  /**
+   * 检查本地草稿是否值得提示恢复。
+   * cloudRow 为云端已加载的记录（新建时传 null）。
+   * 判断依据：本地 savedAt 晚于云端 updated_at，且内容确实不同。
+   */
+  function checkLocalDraft(cloudRow) {
+    if (!window.WSBlogDraft || !form) return;
+    var key = draftKeyNow();
+    if (!key) return;
+    var data = window.WSBlogDraft.read(key);
+    hideDraftBanner();
+    if (!data || draftEmpty(data)) {
+      if (data) window.WSBlogDraft.remove(key);
+      return;
+    }
+    var localAt = Date.parse(data.savedAt || '');
+    var cloudAt = cloudRow && cloudRow.updated_at ? Date.parse(cloudRow.updated_at) : NaN;
+    if (!isNaN(cloudAt) && !isNaN(localAt) && localAt <= cloudAt) {
+      /* 云端才是最新的，本地只是旧影子 */
+      window.WSBlogDraft.remove(key);
+      return;
+    }
+    /* 内容一致时不必打扰用户 */
+    var cloudText = cloudRow
+      ? [
+          cloudRow.title || '',
+          tagsToText(cloudRow.tags),
+          cloudRow.summary || '',
+          cloudRow.content_md || '',
+        ].join('\u0000')
+      : '\u0000';
+    var localText = [
+      data.title || '', data.tags || '', data.summary || '', data.content_md || '',
+    ].join('\u0000');
+    if (cloudRow && cloudText === localText) {
+      window.WSBlogDraft.remove(key);
+      return;
+    }
+    showDraftBanner(data);
+  }
+
+  function applyDraft(data) {
+    if (fieldTitle) fieldTitle.value = data.title || '';
+    if (fieldSlug) fieldSlug.value = data.slug || '';
+    if (fieldSummary) fieldSummary.value = data.summary || '';
+    if (fieldTags) fieldTags.value = data.tags || '';
+    if (fieldContent) fieldContent.value = data.content_md || '';
+    if (previewBox) {
+      previewBox.innerHTML = '';
+      previewBox.setAttribute('hidden', '');
+    }
+    if (formTitle && !editingSlug) formTitle.textContent = '新建投稿';
+    hideDraftBanner();
+    setStatus('已恢复本机草稿 · ' + formatWhen(data.savedAt), 'saved');
+  }
+
+  if (draftRestoreBtn) {
+    draftRestoreBtn.addEventListener('click', function () {
+      if (!pendingDraft) return;
+      applyDraft(pendingDraft);
+      if (fieldTitle) fieldTitle.focus();
+    });
+  }
+
+  if (draftDiscardBtn) {
+    draftDiscardBtn.addEventListener('click', function () {
+      var key = draftKeyNow();
+      if (key && window.WSBlogDraft) window.WSBlogDraft.remove(key);
+      hideDraftBanner();
+      setStatus('', 'idle');
+      toast('已丢弃本机草稿');
+    });
   }
 
   /* ---------------- 提示条 ---------------- */
@@ -161,7 +312,7 @@
   function loadIntoEditor(slug) {
     return C.db()
       .from('cloud_posts')
-      .select('title, slug, summary, tags, content_md, status, review_note')
+      .select('title, slug, summary, tags, content_md, status, review_note, updated_at')
       .eq('slug', slug)
       .maybeSingle()
       .then(function (res) {
@@ -221,6 +372,9 @@
     if (saveBtn) saveBtn.disabled = true;
     if (submitBtn) submitBtn.disabled = true;
 
+    /* 保存前记住本地草稿的 key：新建文章时 key 会随 slug 变化，旧的也要清掉 */
+    var keyBefore = draftKeyNow();
+
     var request;
     if (editingSlug) {
       request = C.db().from('cloud_posts').update(data).eq('slug', editingSlug).select();
@@ -243,6 +397,12 @@
         renderNote(status, '');
         if (formTitle) formTitle.textContent = '编辑：' + (data.title || '');
         setFormLocked(false);
+        /* 已落到云端，本地草稿使命完成 */
+        if (keyBefore && window.WSBlogDraft) window.WSBlogDraft.remove(keyBefore);
+        hideDraftBanner();
+        if (draftCtrl) {
+          draftCtrl.markSaved(status === 'pending' ? '已提交审核' : '已保存到云端');
+        }
         return loadMine();
       })
       .catch(function (err) {
@@ -281,8 +441,10 @@
   if (resetBtn) {
     resetBtn.addEventListener('click', function () {
       if (fieldTitle && (fieldTitle.value || (fieldContent && fieldContent.value))) {
-        if (!window.confirm('清空当前表单？未保存的内容会丢失。')) return;
+        if (!window.confirm('清空当前表单？本机自动保存的草稿也会一并清除。')) return;
       }
+      if (draftCtrl) draftCtrl.discard();
+      hideDraftBanner();
       resetForm();
     });
   }
@@ -391,7 +553,8 @@
       btn.addEventListener('click', function () {
         var slug = btn.getAttribute('data-my-post-edit');
         loadIntoEditor(slug)
-          .then(function () {
+          .then(function (row) {
+            checkLocalDraft(row);
             if (fieldTitle) fieldTitle.focus();
             root.scrollIntoView({ behavior: 'smooth', block: 'start' });
           })
@@ -479,9 +642,13 @@
       ? loadIntoEditor(slug).catch(function (err) {
           toast((err && err.message) || '这篇投稿打不开');
           resetForm();
+          return null;
         })
       : Promise.resolve(null);
-    chain.then(function () {
+    chain.then(function (row) {
+      /* 编辑器就位后再接自动保存，避免初始化过程写进一份空草稿 */
+      setupDraft();
+      checkLocalDraft(row);
       return loadMine();
     });
   });
