@@ -106,9 +106,8 @@
   function loadList() {
     var statusEl = q('[data-cloud-status]', listRoot);
     C.db()
-      .from('cloud_posts')
+      .from('posts_public')
       .select('id, slug, title, summary, tags, content_md, published_at, created_at')
-      .eq('status', 'published')
       .order('published_at', { ascending: false })
       .limit(60)
       .then(function (res) {
@@ -227,9 +226,8 @@
     var navEl = q('[data-cloud-postnav]', detailRoot);
     if (!navEl) return;
     C.db()
-      .from('cloud_posts')
+      .from('posts_public')
       .select('slug, title')
-      .eq('status', 'published')
       .order('published_at', { ascending: false })
       .limit(500)
       .then(function (res) {
@@ -273,10 +271,9 @@
       return;
     }
     C.db()
-      .from('cloud_posts')
+      .from('posts_public')
       .select('id, slug, title, summary, tags, content_md, published_at, created_at')
       .eq('slug', slug)
-      .eq('status', 'published')
       .maybeSingle()
       .then(function (res) {
         if (res && res.error) throw res.error;

@@ -141,6 +141,7 @@
       if (panel.getAttribute('data-admin-panel') === name) panel.removeAttribute('hidden');
       else panel.setAttribute('hidden', '');
     });
+    if (name === 'audit') loadAudit();
   }
 
   qa('[data-admin-tab]').forEach(function (btn) {
@@ -148,6 +149,82 @@
       showPanel(btn.getAttribute('data-admin-tab'));
     });
   });
+
+  /* ---------------- 操作日志（服务端审计留痕） ---------------- */
+
+  var AUDIT_LABELS = {
+    post_delete: '删除文章',
+    post_review: '内容审核',
+    comment_delete: '删除评论',
+    comment_status: '评论显隐',
+    user_status: '封禁/解禁',
+    user_delete: '删除用户',
+    admin_add: '新增管理员',
+    admin_remove: '移除管理员',
+    slugs_sync: '同步文章清单'
+  };
+
+  function loadAudit() {
+    var body = q('[data-audit-log]');
+    if (!body) return Promise.resolve(null);
+    return C.db()
+      .from('admin_audit_log')
+      .select('id, actor_email, action, target_type, target_id, note, payload, created_at')
+      .order('created_at', { ascending: false })
+      .limit(100)
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var rows = (res && res.data) || [];
+        body.innerHTML = rows.length
+          ? rows.map(function (item) {
+              var detail = '';
+              if (item.note) detail += esc(item.note);
+              if (item.payload) {
+                try {
+                  var p = typeof item.payload === 'string' ? JSON.parse(item.payload) : item.payload;
+                  var kv = Object.keys(p).map(function (k) {
+                    return k + '=' + String(p[k] == null ? '—' : p[k]).slice(0, 60);
+                  }).join(' · ');
+                  if (kv) detail += (detail ? ' · ' : '') + esc(kv);
+                } catch (err) { /* payload 不是合法 JSON 时忽略 */ }
+              }
+              return (
+                '<tr>' +
+                '<td class="admin-cell__sub mono">' + esc(C.formatDate(item.created_at)) + '</td>' +
+                '<td class="admin-cell__sub">' + esc(item.actor_email || item.target_id || '—') + '</td>' +
+                '<td>' + esc(AUDIT_LABELS[item.action] || item.action) + '</td>' +
+                '<td class="mono admin-cell__sub">' + esc([item.target_type, item.target_id].filter(Boolean).join(':') || '—') + '</td>' +
+                '<td class="admin-cell__sub">' + (detail || '—') + '</td>' +
+                '</tr>'
+              );
+            }).join('')
+          : '<tr><td colspan="5" class="admin-empty">还没有任何管理操作记录。</td></tr>';
+        return rows;
+      })
+      .catch(function (err) {
+        body.innerHTML = '<tr><td colspan="5" class="admin-empty">日志加载失败：' + esc((err && err.message) || '未知错误') + '</td></tr>';
+        return null;
+      });
+  }
+
+  /* ---------------- 文章 slug 清单同步（供浏览量白名单使用） ---------------- */
+
+  function syncSlugs() {
+    var root = window.__ROOT__ || '/';
+    return fetch(root + 'assets/slug-manifest.json')
+      .then(function (res) {
+        return res.ok ? res.json() : { slugs: [] };
+      })
+      .then(function (manifest) {
+        var slugs = (manifest && manifest.slugs) || [];
+        if (!slugs.length) return null;
+        /* 只同步静态 slug；云端文章的白名单由 post_view 直接查 cloud_posts */
+        return C.db().rpc('admin_sync_slugs', { p_slugs: slugs });
+      })
+      .catch(function () {
+        /* 同步失败不影响后台使用；云端文章浏览量不受影响，静态 slug 用存量清单 */
+      });
+  }
 
   /* ---------------- 概览数据 ---------------- */
 
@@ -997,5 +1074,6 @@
     if (!C.guardAdmin()) return;
     showPanel('posts');
     refreshAll();
+    syncSlugs();
   });
 })();

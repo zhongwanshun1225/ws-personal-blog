@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime
@@ -39,7 +40,10 @@ from wsblog.cloudconf import (  # noqa: E402
     cloud_enabled,
     load_cloud_config,
 )
-from wsblog.cloudposts import fetch_published_cloud_posts  # noqa: E402
+from wsblog.cloudposts import (  # noqa: E402
+    cloud_posts_fingerprint,
+    fetch_published_cloud_posts,
+)
 from wsblog.content import collect_tags, load_page, load_posts, load_projects  # noqa: E402
 from wsblog.server import serve  # noqa: E402
 from wsblog.templates.layout import layout  # noqa: E402
@@ -175,9 +179,12 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     # 所有入口上保持一致。拉取失败自动降级（本次构建少一批在线文章，不报错）。
     cloud_posts: list[dict] = []
     if cloud:
+        # 把静态文章的 slug 传给云端归一化：云文章落静态详情页时若与静态
+        # 文章撞名，自动退回 post.html?slug=（客户端渲染兜底）
         cloud_posts = fetch_published_cloud_posts(
             site_origin=site_origin,
             publishable_key=str(load_cloud_config().get("publishableKey") or ""),
+            static_slugs={post["slug"] for post in posts},
         )
     all_posts = sorted(
         [*posts, *cloud_posts],
@@ -300,17 +307,21 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             ),
         )
 
-    # --- 文章详情（depth 1）---
-    if posts:
+    # --- 文章详情（depth 1）：静态文章与云端文章都落静态页 ---
+    article_posts = all_posts
+    if article_posts:
         os.makedirs(os.path.join(DIST_DIR, "posts"), exist_ok=True)
-    for index, post in enumerate(posts):
-        # posts 已按置顶 + 时间倒序，上一篇 = 更新的那篇
-        prev_post = posts[index - 1] if index > 0 else None
-        next_post = posts[index + 1] if index + 1 < len(posts) else None
+    for index, post in enumerate(article_posts):
+        # 云文章若因 slug 冲突退回 post.html?slug=（客户端渲染），这里跳过落盘
+        if not str(post["url"]).startswith("posts/"):
+            continue
+        # all_posts 已按置顶 + 时间倒序，上一篇 = 更新的那篇
+        prev_post = article_posts[index - 1] if index > 0 else None
+        next_post = article_posts[index + 1] if index + 1 < len(article_posts) else None
 
         # 相关文章：标签重合度优先；没有重合时按时间就近兜底
         scored = []
-        for other in posts:
+        for other in article_posts:
             if other is post:
                 continue
             overlap = len(set(post["tags"]) & set(other["tags"]))
@@ -365,7 +376,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 scripts=["interact.js"],
                 content=post_page(
                     config=config, post=post, prev_post=prev_post, next_post=next_post,
-                    related=related, root=root_prefix(1)
+                    related=related, root=root_prefix(1),
+                    interact_slug=post.get("interact_slug") or post["slug"],
                 ),
             ),
         )
@@ -475,6 +487,16 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         if os.path.isfile(source):
             copy_file(source, os.path.join("assets", name))
 
+    # --- 本地字体等自有资源（src/assets/** → dist/assets/**）---
+    # 字体改为本地化后不再依赖 Google Fonts，必须随构建一起进产物
+    assets_src = os.path.join(SRC_DIR, "assets")
+    if os.path.isdir(assets_src):
+        for root, _dirs, files in os.walk(assets_src):
+            for name in files:
+                full = os.path.join(root, name)
+                rel = os.path.relpath(full, assets_src)
+                copy_file(full, os.path.join("assets", rel))
+
     # --- 云端配置（前端读 window.__CLOUD__）---
     if cloud:
         write("assets/cloud-config.js", build_cloud_config_js(config, site_origin=site_origin))
@@ -485,6 +507,20 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 source = os.path.join(vendor_src, name)
                 if name.endswith(".js") and os.path.isfile(source):
                     copy_file(source, os.path.join("assets", "vendor", name))
+
+        # 静态文章 slug 清单：管理员打开后台时静默同步到云端 known_slugs，
+        # 作为浏览量接口的白名单（防匿名灌随机 slug 撑表）
+        write(
+            "assets/slug-manifest.json",
+            json.dumps(
+                {
+                    "generatedAt": datetime.now().isoformat(timespec="seconds"),
+                    "slugs": [post["slug"] for post in posts],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
 
     # --- 搜索索引 ---
     search_items = [
@@ -774,12 +810,32 @@ def main(argv=None) -> int:
         return 1
 
     if args.serve:
+        # 云端内容变化 → 自动重建（发布即生效）：进程自己轮询云端指纹，
+        # 不需要部署密钥或 webhook；与本地文件监听共用一把构建锁。
+        cloud_check = None
+        if cloud_enabled():
+            serve_config = read_config()
+            serve_origin = str(
+                serve_config.get("siteOrigin") or serve_config.get("url") or ""
+            ).rstrip("/")
+            serve_key = str(load_cloud_config().get("publishableKey") or "")
+
+            def cloud_check():
+                return cloud_posts_fingerprint(site_origin=serve_origin, publishable_key=serve_key)
+
+        build_lock = threading.Lock()
+
+        def rebuild():
+            with build_lock:
+                build(include_drafts=True, clean=False)
+
         serve(
             DIST_DIR,
             port=args.port,
             host=args.host,
-            rebuild=lambda: build(include_drafts=True, clean=False),
+            rebuild=rebuild,
             watch_dirs=[CONTENT_DIR, SRC_DIR],
+            cloud_check=cloud_check,
         )
     return 0
 

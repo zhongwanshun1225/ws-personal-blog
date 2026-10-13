@@ -139,11 +139,24 @@
       });
   }
 
-  /* 浏览量 +1（每次进入文章页记一次；失败静默） */
+  /* 浏览量：同一浏览器会话内同一篇只计一次（sessionStorage 去重），
+     重复访问改走只读的 post_view_read，不再向服务端 +1。 */
   function countView() {
+    var key = 'wsblog:viewed:' + slug;
+    var counted = false;
+    try {
+      counted = window.sessionStorage.getItem(key) === '1';
+    } catch (err) {
+      /* 隐私模式下 sessionStorage 可能不可用，退化为每次都计 */
+    }
     C.db()
-      .rpc('post_view', { p_slug: slug })
+      .rpc(counted ? 'post_view_read' : 'post_view', { p_slug: slug })
       .then(function (res) {
+        if (!counted) {
+          try {
+            window.sessionStorage.setItem(key, '1');
+          } catch (err) { /* 忽略 */ }
+        }
         var rows = res && res.data;
         var value = Array.isArray(rows) ? rows[0] : rows;
         var num = typeof value === 'number' ? value : Number(value && value.post_view);

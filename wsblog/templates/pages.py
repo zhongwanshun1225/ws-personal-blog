@@ -229,7 +229,7 @@ def home_page(*, config: dict, posts: list, projects: list, tags: list, root: st
 
 # ---------- 文章详情 ----------
 
-def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, root: str = "../") -> str:
+def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, root: str = "../", interact_slug: str = "") -> str:
     options = config.get("options") or {}
     show_toc = options.get("showToc", True) is not False and len(post["toc"]) > 2
 
@@ -301,7 +301,7 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, r
     {nav_html}
     {related_html}
   </footer>
-  {post_interact_block(post_slug=post["slug"], post_title=post["title"], root=root, login_next=post["url"])}
+  {post_interact_block(post_slug=(interact_slug or post["slug"]), post_title=post["title"], root=root, login_next=post["url"])}
 </div>"""
 
 
@@ -1008,7 +1008,25 @@ def admin_page(*, config: dict, root: str = "") -> str:
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="comments">评论管理</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="users">用户</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="admins">管理员</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="audit">操作日志</button>
   </div>
+
+  <section class="admin-panel" data-admin-panel="audit" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">管理操作日志</h2>
+        <span class="panel__hint">删帖、删评论、审核、用户封禁、管理员白名单变更等敏感操作的服务端留痕（最近 100 条）</span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th></tr></thead>
+          <tbody data-audit-log>
+            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 
   <section class="admin-panel" data-admin-panel="posts">
     <div class="admin-split">

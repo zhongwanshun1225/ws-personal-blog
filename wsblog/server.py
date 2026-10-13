@@ -96,7 +96,7 @@ def _snapshot(directories) -> dict:
     return state
 
 
-def watch_and_rebuild(directories, rebuild, interval: float = 1.0) -> None:
+def watch_and_rebuild(directories, rebuild, interval: float = 1.0, lock=None) -> None:
     """轮询目录快照，发现变化就重新构建。"""
     previous = _snapshot([d for d in directories if os.path.isdir(d)])
     while True:
@@ -108,23 +108,81 @@ def watch_and_rebuild(directories, rebuild, interval: float = 1.0) -> None:
         if current != previous:
             previous = current
             try:
-                rebuild()
+                if lock is not None:
+                    with lock:
+                        rebuild()
+                else:
+                    rebuild()
             except Exception as exc:  # noqa: BLE001
                 print(f"✗ 重新构建失败：{exc}")
 
 
-def serve(dist_dir, port: int = 4173, rebuild=None, watch_dirs=None, host: str = "127.0.0.1") -> None:
-    """启动预览服务器；``rebuild`` 存在时同时开启自动重建。"""
+def watch_cloud_rebuild(fetch_fingerprint, rebuild, interval: float = 60.0, lock=None) -> None:
+    """轮询云端内容指纹（已发布文章的数量与最新 updated_at），变化即重建。
+
+    这是「后台发布 → 全站生效」的扳机：不需要任何部署密钥或 webhook，
+    服务进程自己发现云端内容变了就把静态页全部重写（含首页统计、
+    搜索索引、RSS、sitemap、云文章的静态详情页）。指纹拉取失败
+    （离线/超时）时静默跳过，不影响正在运行的站点。
+    """
+    try:
+        last = fetch_fingerprint()
+    except Exception:  # noqa: BLE001
+        last = None
+    while True:
+        time.sleep(interval)
+        try:
+            current = fetch_fingerprint()
+        except Exception:  # noqa: BLE001
+            continue
+        if current is None or current == last:
+            continue
+        last = current
+        print("· 检测到云端文章变化，正在重新构建…")
+        try:
+            if lock is not None:
+                with lock:
+                    rebuild()
+            else:
+                rebuild()
+            print("✓ 云端内容重建完成")
+        except Exception as exc:  # noqa: BLE001
+            print(f"✗ 云端内容重建失败：{exc}")
+
+
+def serve(
+    dist_dir,
+    port: int = 4173,
+    rebuild=None,
+    watch_dirs=None,
+    host: str = "127.0.0.1",
+    cloud_check=None,
+    cloud_interval: float = 60.0,
+) -> None:
+    """启动预览服务器。
+
+    ``rebuild`` + ``watch_dirs`` 开启「本地文件变化 → 重建」；
+    ``cloud_check`` 开启「云端内容变化 → 重建」（发布即生效）。
+    两者共用一把互斥锁，避免同时构建互相踩到 dist/。
+    """
     handler = partial(BlogRequestHandler, directory=str(dist_dir))
     socketserver.TCPServer.allow_reuse_address = True
     httpd = socketserver.ThreadingTCPServer((host, port), handler)
     httpd.daemon_threads = True
 
+    build_lock = threading.Lock()
     if rebuild and watch_dirs:
         watcher = threading.Thread(
-            target=watch_and_rebuild, args=(watch_dirs, rebuild), daemon=True
+            target=watch_and_rebuild, args=(watch_dirs, rebuild),
+            kwargs={"lock": build_lock}, daemon=True,
         )
         watcher.start()
+    if rebuild and cloud_check:
+        cloud_watcher = threading.Thread(
+            target=watch_cloud_rebuild, args=(cloud_check, rebuild),
+            kwargs={"interval": cloud_interval, "lock": build_lock}, daemon=True,
+        )
+        cloud_watcher.start()
 
     print(f"\n▸ 本地预览：http://localhost:{port}")
     print("  文件变更会自动重新构建，刷新浏览器即可看到效果。\n")

@@ -9,6 +9,34 @@
    19 外观主题（强调色方案 / 浅色模式 / 外观面板）
    ============================================================ */
 
+/* ---------- 00 本地字体 ----------
+   原先在 <head> 里引用 fonts.googleapis.com / fonts.gstatic.com：大陆网络下这两个域名
+   会超时或被重置，而且是阻塞渲染的 CSS，首屏可能白屏数秒才退回系统字体。
+   这里改为本地 woff2（可变字重，latin 子集，共约 87 KB）：
+   - 只声明 latin 的 unicode-range，中文字形一律交给 --sans / --mono 里的系统字体，
+     既避免下载几 MB 的中文字体，也让中文按系统最佳字形渲染；
+   - font-display: swap 保证字体未就绪时先用系统字体绘制，不阻塞首屏。 */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
 /* ---------- 01 设计令牌 ---------- */
 :root {
   color-scheme: dark;

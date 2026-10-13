@@ -367,9 +367,8 @@ def layout(
 <meta name="twitter:description" content="{esc(desc)}">
 <link rel="icon" href="{build_favicon(config)}">
 <link rel="alternate" type="application/rss+xml" title="{esc(site_title)} RSS" href="{root}feed.xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<!-- 字体已在 assets/main.css 里以本地 @font-face 声明，不再请求 Google Fonts
+     （fonts.googleapis.com / fonts.gstatic.com 在大陆不可达且阻塞渲染） -->
 <link rel="stylesheet" href="{root}assets/main.css">
 {extra_head}
 <script>window.__ROOT__={json.dumps(root)};</script>
