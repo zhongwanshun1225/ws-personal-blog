@@ -10,8 +10,8 @@
 --                       策略形同虚设（任何已登录用户可读全部审计日志）。
 --
 -- 设计要点：
---   * 通知写入只能经 SECURITY DEFINER 触发器，客户端无 INSERT 权限；
---     读取/标记已读/删除走 RPC，全部以 auth.uid() 为边界。
+--   * 通知写入只能经 SECURITY DEFINER 触发器；客户端对 notifications 表
+--     没有任何表级权限，读取/标记已读/删除一律走 RPC，全部以 auth.uid() 为边界。
 --   * 收件人去重：同一事件里「被回复人 / 文章作者 / 全体管理员」三方取并集，
 --     自己给自己不发（notify_push 内部统一拦截）。
 --   * 分页函数返回 jsonb {ok,total,rows}，前端一次拿全所需信息。
@@ -45,8 +45,18 @@ CREATE INDEX IF NOT EXISTS notifications_unread_idx
 
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 
+-- 表级权限：只 REVOKE，不 GRANT —— 客户端一律走 RPC，直连打表会 42501。
+-- 四个通知 RPC（my_notifications / notify_unread_count / notify_mark_read / notify_clear）
+-- 均为 SECURITY DEFINER，且函数体内自行以 `recipient_id = auth.uid()` 收窄
+-- （auth.uid() 为空时直接返回），所以不需要任何表级授权。
+-- 不给 authenticated 表权限比给更强：SECURITY DEFINER 函数以表属主身份运行、
+-- 不受 RLS 约束，真正拦住跨用户访问的是函数体内的 uid 过滤，而非 RLS。
+-- ⚠️ 2026-10-13 上线后实测（aclexplode on relacl）：线上该表 ACL 只含表属主与
+--    service_role，authenticated / anon 无任何表权限 —— 与本节声明一致。
 REVOKE ALL ON public.notifications FROM anon, authenticated;
-GRANT SELECT, UPDATE, DELETE ON public.notifications TO authenticated;
+
+-- 以下三条策略目前不会被执行到（表级已无权限），保留作为「将来若放开表级
+-- SELECT/UPDATE/DELETE 时的行级兜底」，不要删。
 
 DROP POLICY IF EXISTS notifications_own_read ON public.notifications;
 CREATE POLICY notifications_own_read ON public.notifications FOR SELECT
