@@ -42,6 +42,7 @@ from wsblog.cloudconf import (  # noqa: E402
 )
 from wsblog.cloudposts import (  # noqa: E402
     cloud_posts_fingerprint,
+    fetch_public_profiles,
     fetch_published_cloud_posts,
 )
 from wsblog.content import collect_tags, load_page, load_posts, load_projects  # noqa: E402
@@ -52,6 +53,7 @@ from wsblog.templates.pages import (  # noqa: E402
     account_page,
     admin_page,
     archive_page,
+    author_page,
     cloud_post_page,
     cloud_posts_page,
     home_page,
@@ -160,6 +162,24 @@ def check_nested_anchors(rel_path: str, html: str) -> None:
 
 # ---------------- 构建 ----------------
 
+def _is_http_url(url) -> bool:
+    """只认绝对的 http(s) 地址：本地相对路径塞进 og:image / JSON-LD image 会翻车。"""
+    return str(url or "").strip().lower().startswith(("http://", "https://"))
+
+
+def _author_for_post(post: dict, authors_by_id: dict) -> dict | None:
+    """文章详情页的署名：只有该作者建了公开主页才返回（否则宁可不署名）。"""
+    author_id = str(post.get("author_id") or "")
+    author = authors_by_id.get(author_id) if author_id else None
+    if not author:
+        return None
+    return {
+        "name": author["name"],
+        "url": author["url"],
+        "avatar_url": author["avatar_url"],
+    }
+
+
 def build(include_drafts: bool = False, clean: bool = False) -> dict:
     started = time.perf_counter()
     config = read_config()
@@ -185,18 +205,49 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     # 同形的 dict，合并进首页 / 标签 / 搜索 / RSS / sitemap，让两套内容在全站
     # 所有入口上保持一致。拉取失败自动降级（本次构建少一批在线文章，不报错）。
     cloud_posts: list[dict] = []
+    public_profiles: dict[str, dict] = {}
     if cloud:
         # 把静态文章的 slug 传给云端归一化：云文章落静态详情页时若与静态
         # 文章撞名，自动退回 post.html?slug=（客户端渲染兜底）
+        publishable_key = str(load_cloud_config().get("publishableKey") or "")
         cloud_posts = fetch_published_cloud_posts(
             site_origin=site_origin,
-            publishable_key=str(load_cloud_config().get("publishableKey") or ""),
+            publishable_key=publishable_key,
             static_slugs={post["slug"] for post in posts},
+        )
+        # 公开作者资料：给云文章补署名、并驱动作者主页
+        public_profiles = fetch_public_profiles(
+            site_origin=site_origin,
+            publishable_key=publishable_key,
         )
     all_posts = sorted(
         [*posts, *cloud_posts],
         key=lambda post: (0 if post.get("pinned") else 1, -post["date"].timestamp()),
     )
+
+    # --- 作者公开主页（authors/<owner_id>.html）---
+    # 只给「有已发布文章的作者」建页：没有文章的空主页对访客没有意义，
+    # 还会把所有注册用户都变成可枚举的公开页面。
+    authors: list[dict] = []
+    authors_by_id: dict[str, dict] = {}
+    posts_by_author: dict[str, list] = {}
+    for post in cloud_posts:
+        author_id = str(post.get("author_id") or "")
+        if author_id:
+            posts_by_author.setdefault(author_id, []).append(post)
+    for author_id, author_posts in posts_by_author.items():
+        profile = public_profiles.get(author_id) or {}
+        author = {
+            "owner_id": author_id,
+            "name": str(profile.get("nickname") or "").strip() or "匿名作者",
+            "avatar_url": str(profile.get("avatar_url") or "").strip(),
+            "bio": str(profile.get("bio") or "").strip(),
+            "url": f"authors/{author_id}.html",
+            "posts": sorted(author_posts, key=lambda p: -p["date"].timestamp()),
+        }
+        authors.append(author)
+        authors_by_id[author_id] = author
+    authors.sort(key=lambda a: (-len(a["posts"]), a["name"]))
 
     projects = load_projects(CONTENT_DIR, include_drafts)
     tags = collect_tags(all_posts)
@@ -358,6 +409,43 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             ),
         )
 
+    # --- 作者公开主页（depth 1）---
+    if authors:
+        os.makedirs(os.path.join(DIST_DIR, "authors"), exist_ok=True)
+    for author in authors:
+        author_url = str(config.get("url") or "").rstrip("/")
+        author_json_ld = {
+            "@context": "https://schema.org",
+            "@type": "Person",
+            "name": author["name"],
+            "url": f"{author_url}/{author['url']}" if author_url else author["url"],
+        }
+        if author["bio"]:
+            author_json_ld["description"] = author["bio"]
+        if _is_http_url(author["avatar_url"]):
+            author_json_ld["image"] = author["avatar_url"]
+        author_head = (
+            '<script type="application/ld+json">'
+            + json.dumps(author_json_ld, ensure_ascii=False, separators=(",", ":"))
+            + "</script>"
+        )
+        write(
+            author["url"],
+            layout(
+                config=config,
+                title=f"{author['name']} 的文章",
+                description=author["bio"] or f"{author['name']} 在{config.get('title') or '本站'}发布的 {len(author['posts'])} 篇文章。",
+                root=root_prefix(1),
+                current="",
+                canonical=f"/{author['url']}",
+                extra_head=author_head,
+                cloud=cloud,
+                og_type="profile",
+                og_image=author["avatar_url"] if _is_http_url(author["avatar_url"]) else "",
+                content=author_page(config=config, author=author, posts=author["posts"], root=root_prefix(1)),
+            ),
+        )
+
     # --- 文章详情（depth 1）：静态文章与云端文章都落静态页 ---
     article_posts = all_posts
     if article_posts:
@@ -386,13 +474,14 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         article_meta = "\n".join(
             [f'<meta property="article:tag" content="{esc(tag)}">' for tag in post["tags"]]
         )
+        post_author = _author_for_post(post, authors_by_id)
         site_url = str(config.get("url") or "").rstrip("/")
         json_ld = {
             "@context": "https://schema.org",
             "@type": "BlogPosting",
             "headline": post["title"],
             "datePublished": iso_date(post["date"]),
-            "author": {"@type": "Person", "name": str(config.get("author") or "")},
+            "author": {"@type": "Person", "name": (post_author or {}).get("name") or str(config.get("author") or "")},
             "description": post["summary"],
             "mainEntityOfPage": f"{site_url}/{post['url']}" if site_url else post["url"],
         }
@@ -425,6 +514,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                     config=config, post=post, prev_post=prev_post, next_post=next_post,
                     related=related, root=root_prefix(1),
                     interact_slug=post.get("interact_slug") or post["slug"],
+                    author=post_author,
                 ),
             ),
         )
@@ -634,7 +724,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
 
     # --- RSS / sitemap / robots ---
     write("feed.xml", build_feed(config, all_posts))
-    write("sitemap.xml", build_sitemap(config, posts=all_posts, projects=projects, tags=tags, archive_pages=archive_total_pages))
+    write("sitemap.xml", build_sitemap(config, posts=all_posts, projects=projects, tags=tags, archive_pages=archive_total_pages, authors=authors))
     robots = "User-agent: *\nAllow: /\n"
     if config.get("url"):
         robots += f"Sitemap: {str(config['url']).rstrip('/')}/sitemap.xml\n"
@@ -662,13 +752,14 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     )
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    # 核心页（首页 / 项目 / 关于 / 标签 / 404）+ 归档各页 + 文章 / 项目 / 标签详情 + 云端页面
+    # 核心页（首页 / 项目 / 关于 / 标签 / 404）+ 归档各页 + 文章 / 项目 / 标签 / 作者详情 + 云端页面
     page_count = (
         5
         + archive_total_pages
         + len(all_posts)
         + len(projects)
         + len(tags)
+        + len(authors)
         + (6 if cloud else 0)
     )
     drafts_note = "已包含" if any(post["draft"] for post in posts) else "未包含"
@@ -677,6 +768,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     print(f"· 首页展示 {len(home_posts)} 篇 / 归档每页 {archive_per_page or '不限'} 篇（共 {archive_total_pages} 页）")
     print(f"· 项目 {len(projects)} 个")
     print(f"· 标签 {len(tags)} 个")
+    if authors:
+        print(f"· 作者主页 {len(authors)} 个（有已发布文章的作者）")
     print(f"· 页面 {page_count} 个")
     print(f"· 云能力 {'已接入（登录 / 评论 / 后台）' if cloud else '未接入（纯静态）'}")
     print(f"✓ 构建完成，用时 {elapsed_ms}ms → {os.path.relpath(DIST_DIR, os.getcwd())}")
@@ -759,7 +852,7 @@ def build_feed(config: dict, posts: list) -> str:
 
 # ---------------- sitemap ----------------
 
-def build_sitemap(config: dict, *, posts: list, projects: list, tags: list, archive_pages: int = 1) -> str:
+def build_sitemap(config: dict, *, posts: list, projects: list, tags: list, archive_pages: int = 1, authors: list | None = None) -> str:
     site = str(config.get("url") or "https://example.com").rstrip("/")
     urls = [
         {"loc": "/", "priority": "1.0"},
@@ -778,6 +871,7 @@ def build_sitemap(config: dict, *, posts: list, projects: list, tags: list, arch
     ]
     urls += [{"loc": f"/{project['url']}", "priority": "0.7"} for project in projects]
     urls += [{"loc": f"/tags/{tag['slug']}.html", "priority": "0.5"} for tag in tags]
+    urls += [{"loc": f"/{author['url']}", "priority": "0.5"} for author in (authors or [])]
 
     body = "\n".join(
         "  <url><loc>{site}{loc}</loc>{lastmod}<priority>{priority}</priority></url>".format(

@@ -301,6 +301,16 @@
     return cloud().auth.resetPasswordForEmail(email);
   }
 
+  /** 已登录状态下改密码：需要当前密码做 sudo 校验，成功后会话保持有效。
+   *  注意 SDK 的入参是驼峰（oldPassword / newPassword），不是文档里的
+   *  old_password / new_password —— 以 src/vendor/cloud-sdk.js 的实现为准。 */
+  function changePassword(oldPassword, newPassword) {
+    return cloud().auth.resetPasswordForOld({
+      oldPassword: oldPassword,
+      newPassword: newPassword,
+    });
+  }
+
   function signOut() {
     return Promise.resolve()
       .then(function () {
@@ -528,6 +538,7 @@
     sendOtp: sendOtp,
     verifyOtp: verifyOtp,
     resetPasswordForEmail: resetPasswordForEmail,
+    changePassword: changePassword,
     signOut: signOut,
     requireLogin: requireLogin,
     onSessionChange: onSessionChange,

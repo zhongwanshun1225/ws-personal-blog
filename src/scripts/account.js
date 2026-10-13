@@ -246,19 +246,30 @@
     var meta = POST_STATUS[post.status] || {};
     var published = post.status === 'published';
     var editHref = 'write.html?slug=' + encodeURIComponent(post.slug);
+    var editPending = !!post.edit_submitted_at;
+    var editRejected = !editPending && !!post.edit_review_note;
     return (
       '<li class="stack-item">' +
       '<div class="stack-item__head">' +
       '<span class="stack-item__title">' + C.escapeHtml(post.title) + '</span>' +
       '<span class="status-badge ' + (meta.cls || '') + '">' + C.escapeHtml(meta.label || post.status) + '</span>' +
+      (editPending ? '<span class="status-badge status-badge--pending">修改待审</span>' : '') +
       '<span class="stack-item__time">' + C.escapeHtml(C.formatDate(post.updated_at || post.created_at)) + '</span>' +
       '</div>' +
       (post.status === 'rejected' && post.review_note
         ? '<p class="stack-item__note">未通过理由：' + C.escapeHtml(post.review_note) + '</p>'
         : '') +
+      (editPending
+        ? '<p class="stack-item__note">修改已提交，等站长审核。审核期间线上仍是原版本，读者不受影响。</p>'
+        : '') +
+      (editRejected
+        ? '<p class="stack-item__note">上次修改被驳回：' + C.escapeHtml(post.edit_review_note) + '</p>'
+        : '') +
       '<div class="stack-item__actions">' +
       (published
-        ? '<a class="link-btn" href="' + C.escapeHtml(postUrl(post.slug)) + '">阅读</a>'
+        ? '<a class="link-btn" href="' + C.escapeHtml(postUrl(post.slug)) + '">阅读</a>' +
+          '<a class="link-btn" href="' + C.escapeHtml(editHref) + '">' +
+          (editPending ? '查看修改' : '修改') + '</a>'
         : '<a class="link-btn" href="' + C.escapeHtml(editHref) + '">编辑</a>') +
       '</div>' +
       '</li>'
@@ -270,7 +281,8 @@
     if (!uid || !myPostsEl) return Promise.resolve([]);
     return C.db()
       .from('cloud_posts')
-      .select('slug, title, status, review_note, created_at, updated_at, published_at')
+      .select('slug, title, status, review_note, created_at, updated_at, published_at,' +
+              ' edit_submitted_at, edit_review_note')
       .eq('author_id', uid)
       .order('updated_at', { ascending: false })
       .limit(30)
@@ -437,6 +449,65 @@
         toast(target === 'admin' ? '已切换为管理员身份' : '已切换为普通用户身份');
         if (target === 'admin') location.href = C.root + 'admin.html';
       });
+    });
+  }
+
+  /* ---------------- 安全设置：已登录状态下改密码 ----------------
+     走 auth.resetPasswordForOld（当前密码做 sudo 校验），完成后会话保持有效，
+     不需要再登录一次。校验放在前端只为省一次往返，真正的判定在服务端。 */
+
+  var passwordOldEl = q('[data-password-old]');
+  var passwordNewEl = q('[data-password-new]');
+  var passwordConfirmEl = q('[data-password-confirm]');
+  var passwordSaveBtn = q('[data-password-save]');
+
+  if (passwordSaveBtn) {
+    passwordSaveBtn.addEventListener('click', function () {
+      var oldPw = (passwordOldEl && passwordOldEl.value) || '';
+      var newPw = (passwordNewEl && passwordNewEl.value) || '';
+      var confirmPw = (passwordConfirmEl && passwordConfirmEl.value) || '';
+
+      if (!oldPw) {
+        toast('请输入当前密码');
+        return;
+      }
+      if (newPw.length < 8) {
+        toast('新密码至少 8 位');
+        return;
+      }
+      if (newPw === oldPw) {
+        toast('新密码不能和当前密码相同');
+        return;
+      }
+      if (newPw !== confirmPw) {
+        toast('两次输入的新密码不一致');
+        return;
+      }
+
+      passwordSaveBtn.disabled = true;
+      passwordSaveBtn.textContent = '提交中…';
+      C.changePassword(oldPw, newPw)
+        .then(function (res) {
+          if (res && res.error) throw res.error;
+          [passwordOldEl, passwordNewEl, passwordConfirmEl].forEach(function (el) {
+            if (el) el.value = '';
+          });
+          toast('密码已更新，下次登录请用新密码');
+        })
+        .catch(function (err) {
+          var message = (err && err.message) || '';
+          if (/no active session|unauthenticated|not authenticated/i.test(message)) {
+            toast('登录状态已过期，请重新登录后再改密码');
+          } else if (/password|credential|invalid|mismatch/i.test(message)) {
+            toast('当前密码不正确');
+          } else {
+            toast(message || '修改失败，请稍后重试');
+          }
+        })
+        .then(function () {
+          passwordSaveBtn.disabled = false;
+          passwordSaveBtn.textContent = '修改密码';
+        });
     });
   }
 

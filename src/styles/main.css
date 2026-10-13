@@ -927,6 +927,83 @@ a.tag:hover {
   border-left: 2px solid var(--border-strong);
 }
 
+/* 文章署名（链到作者公开主页） */
+.author-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(var(--accent-rgb), 0.45);
+}
+
+.author-link:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* ---------- 作者公开主页 ---------- */
+
+.author-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 22px;
+  margin-top: 22px;
+}
+
+.author-hero__avatar {
+  width: 92px;
+  height: 92px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+}
+
+.author-hero__avatar--text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.author-hero__main {
+  min-width: 0;
+}
+
+.author-hero__name {
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 8px 0 0;
+}
+
+.author-hero__bio {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  line-height: 1.7;
+  margin: 12px 0 0;
+  max-width: 60ch;
+}
+
+.author-hero__stat {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  margin: 12px 0 0;
+}
+
+@media (max-width: 560px) {
+  .author-hero {
+    gap: 16px;
+  }
+
+  .author-hero__avatar {
+    width: 64px;
+    height: 64px;
+  }
+}
+
 .article-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 216px;
@@ -2531,6 +2608,19 @@ a.tag:hover {
   flex: 1;
 }
 
+/* 字段下方的补充说明（比 placeholder 更持久，用于「忘记密码走哪」这类指引） */
+.field__note {
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.field__note a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 /* ---------- 登录 / 注册页 ---------- */
 
 .auth-page {
@@ -3304,6 +3394,84 @@ a.tag:hover {
   gap: 6px;
 }
 
+/* 敏感词命中：贴在评论内容下面，审核时不必再猜「为什么这条被标了」 */
+.admin-cell__flag {
+  display: block;
+  margin-top: 5px;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
+/* 改稿新旧对照：通过前把「即将上线的内容」摊开给管理员看 */
+.edit-diff {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  padding: 14px;
+  background: var(--surface-2);
+  border-radius: 10px;
+}
+
+.edit-diff__col {
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid rgba(var(--neutral-rgb), 0.14);
+  border-radius: 8px;
+}
+
+.edit-diff__label {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+
+.edit-diff__title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.edit-diff__summary {
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  margin: 0 0 10px;
+}
+
+/* 全文可能很长，限高滚动，避免把表格撑到无法操作 */
+.edit-diff__body {
+  max-height: 340px;
+  overflow: auto;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  color: var(--text-dim);
+  border-top: 1px solid rgba(var(--neutral-rgb), 0.12);
+  padding-top: 10px;
+}
+
+.edit-diff__body pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chip--removable {
+  cursor: pointer;
+}
+
+.chip__x {
+  margin-left: 6px;
+  opacity: 0.55;
+}
+
+.chip--removable:hover .chip__x {
+  opacity: 1;
+}
+
 .status-badge {
   display: inline-block;
   font-size: 0.68rem;
@@ -3754,6 +3922,26 @@ a.tag:hover {
 .comment__time {
   font-size: 0.74rem;
   color: var(--text-faint);
+}
+
+/* 待审评论：作者自己能看见，但要有明确标记，避免误以为已公开 */
+.comment__badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  line-height: 1.7;
+  color: var(--warn);
+  background: rgba(var(--neutral-rgb), 0.08);
+  border: 1px solid var(--border);
+}
+
+.comment--pending .comment__text {
+  color: var(--text-dim);
+}
+
+.comment--pending .comment__avatar {
+  opacity: 0.55;
 }
 
 .comment__delete {

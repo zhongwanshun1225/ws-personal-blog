@@ -354,7 +354,7 @@ def paginate(items: list, per_page: int) -> tuple[list[list], int]:
 
 # ---------- 文章详情 ----------
 
-def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, root: str = "../", interact_slug: str = "") -> str:
+def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, root: str = "../", interact_slug: str = "", author: dict | None = None) -> str:
     options = config.get("options") or {}
     show_toc = options.get("showToc", True) is not False and len(post["toc"]) > 2
 
@@ -396,6 +396,20 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, r
     )
     summary_html = f'<p class="article-head__summary">{esc(post["summary"])}</p>' if post.get("summary") else ""
 
+    # 署名：只对「有公开主页的云端作者」出现（静态文章的作者就是站长本人，
+    # 全站页脚已经写了，重复署名反而啰嗦）
+    if author and author.get("name"):
+        author_name = esc(author["name"])
+        if author.get("url"):
+            author_html = (
+                f'<a class="author-link" href="{root}{author["url"]}">{author_name}</a>'
+                f'<span class="meta-dot"></span>'
+            )
+        else:
+            author_html = f'<span class="meta-text">{author_name}</span><span class="meta-dot"></span>'
+    else:
+        author_html = ""
+
     return f"""<div class="wrap">
   <div class="page-head">
     <nav class="breadcrumb" aria-label="面包屑">
@@ -407,7 +421,7 @@ def post_page(*, config: dict, post: dict, prev_post, next_post, related=None, r
       <span class="eyebrow">{esc(post["tags"][0] if post["tags"] else "技术笔记")}</span>
       <h1 class="article-head__title">{esc(post["title"])}</h1>
       <div class="article-head__meta">
-        <span class="meta-text">{_full_date(post["date"])}</span>
+        {author_html}<span class="meta-text">{_full_date(post["date"])}</span>
         <span class="meta-dot"></span>
         <span class="meta-text">{post["reading_time"]} 分钟阅读</span>
         <span class="meta-dot"></span>
@@ -614,6 +628,57 @@ def tag_page(*, config: dict, tag: dict, posts: list, root: str = "../../") -> s
     <p class="article-head__summary" style="margin-top:18px">该标签下共 {len(posts)} 篇文章。</p>
   </div>
   <section class="section" style="margin-top:44px">
+    <ul class="post-list">{post_list}</ul>
+  </section>
+</div>"""
+
+
+# ---------- 作者公开主页 ----------
+
+def author_page(*, config: dict, author: dict, posts: list, root: str = "../") -> str:
+    """某位作者的公开主页（authors/<owner_id>.html）。
+
+    构建期只为「有已发布文章的作者」生成这一页（见 build.py），
+    所以页面上一定至少有 1 篇，不会出现空壳主页。
+    数据来自 profiles_public 视图：只有 owner_id / nickname / avatar_url / bio，
+    不含邮箱等 PII。
+    """
+    name = str(author.get("name") or author.get("nickname") or "").strip() or "匿名作者"
+    avatar = str(author.get("avatar_url") or "").strip()
+    bio = str(author.get("bio") or "").strip()
+    initial = (name[:1] or "A").upper()
+
+    if _is_http(avatar):
+        avatar_html = (
+            f'<img class="author-hero__avatar" src="{esc(avatar)}" alt="{esc(name)}" loading="lazy">'
+        )
+    else:
+        avatar_html = (
+            f'<span class="author-hero__avatar author-hero__avatar--text" aria-hidden="true">'
+            f"{esc(initial)}</span>"
+        )
+    bio_html = f'<p class="author-hero__bio">{esc(bio)}</p>' if bio else ""
+    post_list = "\n    ".join(_post_item(post, root, config) for post in posts)
+
+    return f"""<div class="wrap">
+  <div class="page-head">
+    <nav class="breadcrumb" aria-label="面包屑">
+      <a href="{root}index.html">首页</a>
+      <span class="breadcrumb__sep">/</span>
+      <span>作者</span>
+    </nav>
+    <header class="author-hero">
+      {avatar_html}
+      <div class="author-hero__main">
+        <span class="eyebrow">Author</span>
+        <h1 class="author-hero__name">{esc(name)}</h1>
+        {bio_html}
+        <p class="author-hero__stat">已发布 {len(posts)} 篇文章</p>
+      </div>
+    </header>
+  </div>
+  <section class="section" style="margin-top:44px">
+    <div class="section__head"><h2 class="section__title">全部文章</h2></div>
     <ul class="post-list">{post_list}</ul>
   </section>
 </div>"""
@@ -841,7 +906,7 @@ def post_interact_block(*, post_slug: str, post_title: str, root: str = "../", l
       </div>
       <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
       <div class="comment-form__foot">
-        <span class="comment-form__hint">最多 1000 字</span>
+        <span class="comment-form__hint">最多 1000 字 · 提交后需站长审核才公开</span>
         <button class="btn btn--primary btn--sm" type="submit" data-comment-submit>发表评论</button>
       </div>
     </form>
@@ -1073,6 +1138,34 @@ def account_page(*, config: dict, root: str = "") -> str:
 
       <section class="panel">
         <div class="panel__head">
+          <h2 class="panel__title">安全设置</h2>
+          <span class="panel__hint">改完立即生效，当前登录不会被踢下线</span>
+        </div>
+        <form class="form-grid" onsubmit="return false">
+          <label class="field field--full">
+            <span class="field__label">当前密码</span>
+            <input class="field__input" type="password" autocomplete="current-password" maxlength="64"
+                   placeholder="用来确认是你本人操作" data-password-old>
+          </label>
+          <label class="field">
+            <span class="field__label">新密码</span>
+            <input class="field__input" type="password" autocomplete="new-password" maxlength="64"
+                   placeholder="至少 8 位" data-password-new>
+          </label>
+          <label class="field">
+            <span class="field__label">确认新密码</span>
+            <input class="field__input" type="password" autocomplete="new-password" maxlength="64"
+                   placeholder="再输一次" data-password-confirm>
+          </label>
+          <div class="form-grid__foot">
+            <button class="btn btn--primary btn--sm" type="button" data-password-save>修改密码</button>
+            <span class="field__note">忘记当前密码？到 <a href="{root}login.html">登录页</a> 点「忘记密码」走邮箱重置。</span>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel__head">
           <h2 class="panel__title">我的投稿</h2>
           <span class="panel__hint">
             共 <span data-my-post-count>0</span> 篇 · <a href="{root}write.html">写新文章</a>
@@ -1228,7 +1321,8 @@ def write_page(*, config: dict, root: str = "") -> str:
           <li>正文会<strong>自动保存在本机</strong>，切页或误关浏览器也不会丢；下次打开发布页可一键恢复。</li>
           <li>提交后进入<strong>待审核</strong>，站长通过之前不会出现在前台。</li>
           <li>未通过的稿件会附上理由，改完可以再次提交。</li>
-          <li>已发布的文章不能自行编辑，需要修改请联系站长先下架。</li>
+          <li>已发布的文章<strong>可以自己改</strong>：受信任作者改完立即生效；其他人改完进入待审，
+            审核期间线上仍是原文，不会出现「改稿即下架」的断档。</li>
           <li>请勿提交违规、侵权或与本站主题无关的内容。</li>
         </ul>
       </div>
@@ -1260,10 +1354,12 @@ def admin_page(*, config: dict, root: str = "") -> str:
     <div class="admin-stat"><div class="admin-stat__value" data-stat-today>0</div><div class="admin-stat__label">24h 新评论</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-views>0</div><div class="admin-stat__label">总阅读量</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-hidden>0</div><div class="admin-stat__label">已隐藏评论</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-pending-comments>0</div><div class="admin-stat__label">待审评论</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-likes>0</div><div class="admin-stat__label">点赞总数</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-posts>0</div><div class="admin-stat__label">在线文章</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-drafts>0</div><div class="admin-stat__label">草稿</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-pending>0</div><div class="admin-stat__label">待审核投稿</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-edit-pending>0</div><div class="admin-stat__label">待审改稿</div></div>
   </div>
 
   <div class="admin-tabs" role="tablist" aria-label="后台分区">
@@ -1394,6 +1490,25 @@ def admin_page(*, config: dict, root: str = "") -> str:
 
     <div class="panel">
       <div class="panel__head">
+        <h2 class="panel__title">待审改稿</h2>
+        <span class="panel__hint">
+          作者对<strong>已发布文章</strong>的修改。线上仍是旧版本 —— 读者在审核期间看到的是原文，通过后才替换
+          （当前 <span data-edit-count>0</span> 篇待处理）
+        </span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>新标题 / 原标题</th><th>作者</th><th>提交时间</th><th>操作</th></tr></thead>
+          <tbody data-admin-edits>
+            <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="admin-pager" data-edit-pager></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
         <h2 class="panel__title">已处理投稿</h2>
         <span class="panel__hint">最近审核过的稿件，可随时下架或重新通过</span>
       </div>
@@ -1419,6 +1534,7 @@ def admin_page(*, config: dict, root: str = "") -> str:
         <input class="field__input" type="search" placeholder="搜索昵称 / 内容 / 文章 slug" data-comment-search>
         <div class="chip-row">
           <button class="chip is-active" type="button" data-comment-filter="all">全部</button>
+          <button class="chip" type="button" data-comment-filter="pending">待审</button>
           <button class="chip" type="button" data-comment-filter="visible">显示中</button>
           <button class="chip" type="button" data-comment-filter="hidden">已隐藏</button>
         </div>
@@ -1432,6 +1548,23 @@ def admin_page(*, config: dict, root: str = "") -> str:
         </table>
       </div>
       <div class="admin-pager" data-comment-pager></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">敏感词</h2>
+        <span class="panel__hint">
+          命中即给评论打上标记留待审（不会自动隐藏）。所有新评论本来就要过审核，这里只是帮你先看一眼
+        </span>
+      </div>
+      <div class="admin-toolbar">
+        <input class="field__input" type="text" maxlength="40" placeholder="输入要拦截的词，如 加微信"
+               data-word-input>
+        <button class="btn btn--primary btn--sm" type="button" data-word-add>添加</button>
+      </div>
+      <div class="chip-row" data-word-list>
+        <span class="admin-empty">加载中…</span>
+      </div>
     </div>
   </section>
 
@@ -1453,10 +1586,10 @@ def admin_page(*, config: dict, root: str = "") -> str:
       <div class="admin-table-wrap">
         <table class="admin-table">
           <thead>
-            <tr><th>昵称 / ID</th><th>邮箱</th><th>状态</th><th>角色</th><th>互动</th><th>注册时间</th><th>操作</th></tr>
+            <tr><th>昵称 / ID</th><th>邮箱</th><th>状态</th><th>角色</th><th>改稿权限</th><th>互动</th><th>注册时间</th><th>操作</th></tr>
           </thead>
           <tbody data-admin-users>
-            <tr><td colspan="7" class="admin-empty">加载中…</td></tr>
+            <tr><td colspan="8" class="admin-empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1567,7 +1700,7 @@ def cloud_post_page(*, config: dict, root: str = "") -> str:
         </div>
         <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
         <div class="comment-form__foot">
-          <span class="comment-form__hint">最多 1000 字</span>
+          <span class="comment-form__hint">最多 1000 字 · 提交后需站长审核才公开</span>
           <button class="btn btn--primary btn--sm" type="submit" data-comment-submit>发表评论</button>
         </div>
       </form>

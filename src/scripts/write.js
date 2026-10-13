@@ -5,10 +5,15 @@
  * 想直接写 published 会被数据库的 RLS 策略拒绝，审核权只属于管理员。
  *
  * 状态流转：
- *   draft ──提交审核──▶ pending ──管理员通过──▶ published（前台可见，作者只读）
+ *   draft ──提交审核──▶ pending ──管理员通过──▶ published（前台可见）
  *                        └──管理员驳回──▶ rejected（附理由，作者改完可再投）
  *
- * 已发布的文章在本页只读：RLS 的 posts_own_update 明确禁止作者改 published 行。
+ * 已发布文章的修改走另一条通道（author_update_post RPC，不是直连表）：
+ *   · 受信任作者（管理员，或被站长逐个开启 can_publish 的账号）→ 改完立即生效
+ *   · 其他作者 → 落进 cloud_posts.edit_* 暂存列，线上版本全程照旧展示，
+ *     站长在后台「待审改稿」里通过后才替换
+ * 之所以必须走 RPC：RLS 的 posts_own_update 只允许改非 published 行，
+ * 放宽它会同时把「直接改成 published」的口子一起打开（那张表没有 BEFORE UPDATE 守卫）。
  */
 
 (function () {
@@ -59,6 +64,9 @@
   var editingSlug = '';
   var editingStatus = '';
   var myPosts = [];
+  /* 当前账号是否有「改稿直接生效」权限（来自 my_account().can_publish）；
+     仅用来把提示语文案说准，真正的判定在 author_update_post 里 */
+  var myCanPublish = false;
 
   /* 本地草稿控制器（draft.js 注入；脚本缺失时退化为不自动保存） */
   var draftCtrl = null;
@@ -261,7 +269,7 @@
 
   /* ---------------- 提示条 ---------------- */
 
-  function renderNote(status, note) {
+  function renderNote(status, note, row) {
     if (!noteBox) return;
     var html = '';
     if (status === 'pending') {
@@ -271,7 +279,15 @@
         (note ? '站长给的理由：' + esc(note) : '站长没有填写理由。') +
         ' 修改之后可以重新提交审核。';
     } else if (status === 'published') {
-      html = '<strong>这篇已经发布了。</strong>已发布的文章不能在这里修改，需要改动请联系站长先下架。';
+      var editPending = !!(row && row.edit_submitted_at);
+      var editRejected = !!(row && !row.edit_submitted_at && row.edit_review_note);
+      html = '<strong>这篇已经发布了。</strong>可以直接在这里改 —— ' +
+        (myCanPublish
+          ? '你的账号已开启「改稿直接生效」，提交后线上立即更新。'
+          : '提交后进入待审：<strong>审核期间线上仍是现在的版本</strong>，' +
+            '读者看到的是原文，站长通过后才替换成你的新版本。') +
+        (editPending ? ' 你已经提交过一版修改，正在等站长审核。' : '') +
+        (editRejected ? ' 上次修改被驳回：' + esc(row.edit_review_note) : '');
     }
     if (!html) {
       noteBox.setAttribute('hidden', '');
@@ -294,6 +310,25 @@
     });
   }
 
+  /** 已发布文章的 slug 不让改：RPC 不接受改 slug，放开只会让人以为链接跟着变了。 */
+  function applyLockState() {
+    setFormLocked(false);
+    if (editingStatus === 'published' && fieldSlug) fieldSlug.disabled = true;
+  }
+
+  /** 已发布文章没有「保存草稿」这一步（改稿只有提交一个动作），按钮跟着换。 */
+  function applyActionButtons() {
+    var published = editingStatus === 'published';
+    if (saveBtn) {
+      saveBtn.hidden = published;
+      saveBtn.disabled = false;
+    }
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = published ? '提交修改' : '提交审核';
+    }
+  }
+
   function resetForm() {
     editingSlug = '';
     editingStatus = '';
@@ -303,8 +338,8 @@
       previewBox.innerHTML = '';
       previewBox.setAttribute('hidden', '');
     }
-    if (submitBtn) submitBtn.textContent = '提交审核';
-    setFormLocked(false);
+    applyLockState();
+    applyActionButtons();
     renderNote('');
     if (history.replaceState) history.replaceState(null, '', 'write.html');
   }
@@ -312,7 +347,9 @@
   function loadIntoEditor(slug) {
     return C.db()
       .from('cloud_posts')
-      .select('title, slug, summary, tags, content_md, status, review_note, updated_at')
+      .select('title, slug, summary, tags, content_md, status, review_note, updated_at,' +
+              ' edit_title, edit_summary, edit_content_md, edit_tags,' +
+              ' edit_submitted_at, edit_review_note')
       .eq('slug', slug)
       .maybeSingle()
       .then(function (res) {
@@ -321,20 +358,27 @@
         if (!row) throw new Error('找不到这篇投稿，可能已被删除');
         editingSlug = row.slug;
         editingStatus = row.status || 'draft';
-        if (fieldTitle) fieldTitle.value = row.title || '';
+        /* 已发布文章：主字段是线上那一版，edit_* 是待审 / 被驳回的那一版。
+           作者从「修改」进来，多半是要接着改 edit_* 那版，所以优先载入它。 */
+        var useEdit = editingStatus === 'published' &&
+          (!!row.edit_submitted_at || !!row.edit_review_note) &&
+          !!(row.edit_content_md || row.edit_title);
+        if (fieldTitle) fieldTitle.value = (useEdit ? row.edit_title : row.title) || '';
         if (fieldSlug) fieldSlug.value = row.slug || '';
-        if (fieldSummary) fieldSummary.value = row.summary || '';
-        if (fieldTags) fieldTags.value = tagsToText(row.tags);
-        if (fieldContent) fieldContent.value = row.content_md || '';
-        if (formTitle) formTitle.textContent = '编辑：' + (row.title || '');
+        if (fieldSummary) fieldSummary.value = (useEdit ? row.edit_summary : row.summary) || '';
+        if (fieldTags) fieldTags.value = tagsToText(useEdit ? row.edit_tags : row.tags);
+        if (fieldContent) fieldContent.value = (useEdit ? row.edit_content_md : row.content_md) || '';
+        if (formTitle) {
+          formTitle.textContent = (editingStatus === 'published' ? '修改已发布：' : '编辑：') +
+            (row.title || '');
+        }
         if (previewBox) {
           previewBox.innerHTML = '';
           previewBox.setAttribute('hidden', '');
         }
-        var locked = editingStatus === 'published';
-        setFormLocked(locked);
-        renderNote(editingStatus, row.review_note);
-        if (locked && submitBtn) submitBtn.textContent = '已发布';
+        applyLockState();
+        applyActionButtons();
+        renderNote(editingStatus, row.review_note, row);
         return row;
       });
   }
@@ -351,8 +395,77 @@
     };
   }
 
+  /** author_update_post 的 error 码 → 人话。 */
+  var EDIT_ERRORS = {
+    unauthenticated: '登录状态已过期，请重新登录',
+    inactive: '账号已被禁用，暂时不能修改文章',
+    not_found: '找不到这篇文章，或者你不是作者',
+    not_published: '这篇文章还没发布，请走普通的草稿 / 投稿流程',
+    title_required: '标题不能为空',
+    content_required: '正文不能为空',
+  };
+
+  /** 已发布文章的改稿：走 author_update_post，由服务端决定「直接生效」还是「进待审」。 */
+  function savePublishedEdit() {
+    if (busy) return;
+    if (C.requireLogin()) return;
+    if (C.requireActive()) return;
+
+    var data = readForm(editingStatus);
+    if (!data.title) {
+      toast('先写个标题吧');
+      if (fieldTitle) fieldTitle.focus();
+      return;
+    }
+    if (!data.content_md.trim()) {
+      toast('正文还是空的');
+      if (fieldContent) fieldContent.focus();
+      return;
+    }
+
+    busy = true;
+    if (saveBtn) saveBtn.disabled = true;
+    if (submitBtn) submitBtn.disabled = true;
+
+    var keyBefore = draftKeyNow();
+
+    return C.db().rpc('author_update_post', {
+      p_slug: editingSlug,
+      p_title: data.title,
+      p_summary: data.summary,
+      p_content_md: data.content_md,
+      p_tags: data.tags,
+      p_submit: true,
+    })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var out = res && res.data;
+        var result = out && typeof out === 'object' ? out : {};
+        if (result.ok !== true) {
+          throw new Error(EDIT_ERRORS[result.error] || '提交失败（' + (result.error || '未知错误') + '）');
+        }
+        var direct = result.mode === 'direct';
+        toast(direct ? '修改已生效，线上已更新' : '修改已提交，站长通过后替换线上版本');
+        /* 已经落到云端（或待审）了，本地草稿使命完成 */
+        if (keyBefore && window.WSBlogDraft) window.WSBlogDraft.remove(keyBefore);
+        hideDraftBanner();
+        if (draftCtrl) draftCtrl.markSaved(direct ? '已生效' : '已提交待审');
+        return loadIntoEditor(editingSlug);
+      })
+      .then(function () { return loadMine(); })
+      .catch(function (err) {
+        toast((err && (err.message || err.error_description)) || '提交失败');
+      })
+      .then(function () {
+        busy = false;
+        if (submitBtn) submitBtn.disabled = false;
+      });
+  }
+
   function save(status) {
     if (busy) return;
+    /* 已发布文章没有草稿态，只有「提交修改」一条路 */
+    if (editingSlug && editingStatus === 'published') return savePublishedEdit();
     if (C.requireLogin()) return;
     if (C.requireActive()) return;
 
@@ -396,7 +509,8 @@
         }
         renderNote(status, '');
         if (formTitle) formTitle.textContent = '编辑：' + (data.title || '');
-        setFormLocked(false);
+        applyLockState();
+        applyActionButtons();
         /* 已落到云端，本地草稿使命完成 */
         if (keyBefore && window.WSBlogDraft) window.WSBlogDraft.remove(keyBefore);
         hideDraftBanner();
@@ -421,6 +535,7 @@
 
   if (saveBtn) {
     saveBtn.addEventListener('click', function () {
+      if (editingStatus === 'published') return; /* 已发布走「提交修改」，没有草稿态 */
       if (editingStatus === 'pending') {
         toast('已撤回为草稿，改完记得重新提交');
       }
@@ -430,11 +545,17 @@
 
   if (submitBtn) {
     submitBtn.addEventListener('click', function () {
-      if (editingStatus === 'published') {
-        toast('已发布的文章不能重复提交');
+      if (editingStatus !== 'published') {
+        save('pending');
         return;
       }
-      save('pending');
+      if (!window.confirm(
+        '提交对已发布文章的修改？\n\n' +
+        (myCanPublish
+          ? '你的账号已开启「改稿直接生效」，提交后线上立即更新。'
+          : '提交后进入待审：审核期间线上仍是现在的版本，读者不受影响，站长通过后才替换。')
+      )) return;
+      savePublishedEdit();
     });
   }
 
@@ -521,21 +642,32 @@
       : '更新于 ' + C.formatDate(post.updated_at || post.created_at);
     var isPending = post.status === 'pending';
     var isPublished = post.status === 'published';
+    var editPending = !!post.edit_submitted_at;
+    var editRejected = !editPending && !!post.edit_review_note;
 
     return (
       '<li class="stack-item" data-my-post-row="' + esc(post.slug) + '">' +
       '<div class="stack-item__head">' +
       '<span class="stack-item__title">' + esc(post.title) + '</span>' +
       statusBadge(post.status) +
+      (editPending ? '<span class="status-badge status-badge--pending">修改待审</span>' : '') +
       '<span class="stack-item__time">' + esc(timeLabel) + '</span>' +
       '</div>' +
       '<div class="stack-item__text mono">' + esc(post.slug) + '</div>' +
       (post.status === 'rejected' && post.review_note
         ? '<p class="stack-item__note">未通过理由：' + esc(post.review_note) + '</p>'
         : '') +
+      (editPending
+        ? '<p class="stack-item__note">修改已提交，等站长审核。审核期间线上仍是原版本，读者不受影响。</p>'
+        : '') +
+      (editRejected
+        ? '<p class="stack-item__note">上次修改被驳回：' + esc(post.edit_review_note) + '</p>'
+        : '') +
       '<div class="stack-item__actions">' +
       (isPublished
-        ? '<a class="link-btn" href="' + esc(postUrl(post.slug)) + '">阅读</a>'
+        ? '<a class="link-btn" href="' + esc(postUrl(post.slug)) + '">阅读</a>' +
+          '<button class="link-btn" type="button" data-my-post-edit="' + esc(post.slug) + '">' +
+          (editPending ? '查看修改' : '修改') + '</button>'
         : '<button class="link-btn" type="button" data-my-post-edit="' + esc(post.slug) + '">编辑</button>') +
       (isPending
         ? '<button class="link-btn" type="button" data-my-post-withdraw="' + esc(post.slug) + '">撤回</button>'
@@ -609,7 +741,8 @@
     if (!uid) return Promise.resolve([]);
     return C.db()
       .from('cloud_posts')
-      .select('slug, title, status, review_note, created_at, updated_at, published_at')
+      .select('slug, title, status, review_note, created_at, updated_at, published_at,' +
+              ' edit_submitted_at, edit_review_note')
       .eq('author_id', uid)
       .order('updated_at', { ascending: false })
       .limit(50)
@@ -635,8 +768,20 @@
 
   /* ---------------- 启动 ---------------- */
 
+  applyActionButtons();
+
   C.booted().then(function () {
-    if (C.requireLogin()) return;
+    if (C.requireLogin()) return null;
+    /* 先问一次权限，好让「立即生效 / 进待审」的提示语说准；
+       拿不到也不影响功能 —— 真正的判定在 author_update_post 里。 */
+    return C.db().rpc('my_account')
+      .then(function (res) {
+        var acc = res && res.data;
+        myCanPublish = !!(acc && typeof acc === 'object' && acc.can_publish);
+      })
+      .catch(function () { /* 沿用默认措辞 */ });
+  }).then(function () {
+    if (!C.currentUid()) return null;
     var slug = slugParam();
     var chain = slug
       ? loadIntoEditor(slug).catch(function (err) {
@@ -645,7 +790,7 @@
           return null;
         })
       : Promise.resolve(null);
-    chain.then(function (row) {
+    return chain.then(function (row) {
       /* 编辑器就位后再接自动保存，避免初始化过程写进一份空草稿 */
       setupDraft();
       checkLocalDraft(row);

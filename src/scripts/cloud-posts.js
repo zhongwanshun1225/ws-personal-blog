@@ -261,6 +261,8 @@
         '<span class="eyebrow">' + escapeHtml(tags[0] || '在线发布') + '</span>' +
         '<h1 class="article-head__title">' + escapeHtml(post.title) + '</h1>' +
         '<div class="article-head__meta">' +
+        /* 署名占位：昵称要另取一次（profiles_public），拿到才显示 */
+        '<span data-cloud-author hidden></span>' +
         '<span class="meta-text">' + escapeHtml(formatDate(published)) + '</span>' +
         '<span class="meta-dot"></span>' +
         '<span class="meta-text">' + readingTime(post.content_md) + ' 分钟阅读</span>' +
@@ -281,12 +283,39 @@
     }
 
     loadPostNav(post.slug);
+    loadAuthor(post.author_id);
     bindTocSpy();
 
     /* 交给互动模块接管（云端文章的 post_slug 统一加 cloud: 前缀） */
     if (window.WSBlogInteract) {
       window.WSBlogInteract.init('cloud:' + post.slug, post.title);
     }
+  }
+
+  /** 署名：作者主页由构建期生成（authors/<owner_id>.html）。
+   *  昵称在 profiles_public 视图里（不含邮箱等 PII），拿不到就干脆不署名 ——
+   *  宁可少一行，也不要出现「null」或空链接。 */
+  function loadAuthor(authorId) {
+    var host = q('[data-cloud-author]', detailRoot);
+    if (!host || !authorId) return;
+    C.db()
+      .from('profiles_public')
+      .select('nickname')
+      .eq('owner_id', String(authorId))
+      .maybeSingle()
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var name = (res && res.data && res.data.nickname) || '';
+        if (!String(name).trim()) return;
+        host.innerHTML =
+          '<a class="author-link" href="' + C.root + 'authors/' +
+          encodeURIComponent(String(authorId)) + '.html">' + escapeHtml(name) + '</a>' +
+          '<span class="meta-dot"></span>';
+        host.removeAttribute('hidden');
+      })
+      .catch(function (err) {
+        console.warn('[cloud-posts] 作者昵称加载失败', err && err.message);
+      });
   }
 
   /* 目录滚动高亮（与静态文章页 app.js 的行为一致） */
@@ -377,7 +406,7 @@
     }
     C.db()
       .from('posts_public')
-      .select('id, slug, title, summary, tags, content_md, published_at, created_at')
+      .select('id, slug, title, summary, tags, content_md, published_at, created_at, author_id')
       .eq('slug', slug)
       .maybeSingle()
       .then(function (res) {

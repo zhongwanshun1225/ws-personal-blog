@@ -268,12 +268,19 @@
           .join('') +
         '</ul>';
     }
+    /* 服务端把新评论置为 pending；这里只回显状态，不做任何判断，
+       免得前端以为「发出去了就是上线了」。 */
+    var pending = item.status === 'pending';
+    var badge = pending
+      ? '<span class="comment__badge">审核中</span>'
+      : '';
     return (
-      '<li class="comment" data-comment="' + item.id + '">' +
+      '<li class="comment' + (pending ? ' comment--pending' : '') + '" data-comment="' + item.id + '">' +
       '<span class="comment__avatar">' + C.escapeHtml(name.slice(0, 1).toUpperCase()) + '</span>' +
       '<div class="comment__body">' +
       '<div class="comment__head">' +
       '<span class="comment__name">' + C.escapeHtml(name) + '</span>' +
+      badge +
       '<span class="comment__time">' + C.escapeHtml(relativeTime(item.created_at)) + '</span>' +
       replyBtn +
       (item.is_mine
@@ -409,11 +416,24 @@
         if (rows.length === 0) throw new Error('评论没有保存成功，请稍后重试');
         if (inputEl) inputEl.value = '';
         setReplyTarget(null);
-        toast(wasReply ? '回复已发布' : '评论已发布');
+        /* 用服务端回写的 status 决定文案：普通读者的评论会先进待审，
+           不能提示「已发布」——那会让人以为线上已经能看到。 */
+        var needReview = rows[0] && rows[0].status === 'pending';
+        if (needReview) {
+          toast(wasReply ? '回复已提交，站长通过后显示' : '评论已提交，站长通过后显示');
+        } else {
+          toast(wasReply ? '回复已发布' : '评论已发布');
+        }
         return loadComments();
       })
       .catch(function (err) {
-        toast((err && err.message) || '评论失败，请稍后重试');
+        var message = (err && err.message) || '';
+        if (/发言太快|评论太多|RATE_LIMIT/.test(message)) {
+          /* 服务端的原因已经是给人看的，直接透出，别包一层「评论失败」 */
+          toast(message.replace(/^[A-Z0-9]+:\s*/, ''));
+        } else {
+          toast(message || '评论失败，请稍后重试');
+        }
       })
       .then(function () {
         if (submitEl) submitEl.disabled = false;
