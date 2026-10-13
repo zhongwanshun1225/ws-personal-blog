@@ -94,6 +94,22 @@ THEME_BOOT = (
 )
 
 
+# 安全兜底（meta 形式的 CSP）。这几条不需要放宽任何现有脚本，但正好堵死两条
+# 真实可利用的路径：
+#   form-action 'none' —— 正文里伪造的 <form action="https://evil.example"> 登录框无处投递
+#   base-uri   'none'  —— 阻止注入 <base> 改写全站相对链接
+# 说明：
+#   · frame-ancestors（防点击劫持）meta 无法表达，需要在托管侧加响应头；
+#   · 刻意不设 default-src / script-src / connect-src：页面有三处内联脚本，
+#     且要访问云数据库，收紧前需要先把内联脚本改成 'sha256-…' 白名单。
+CSP_META = (
+    '<meta http-equiv="Content-Security-Policy" content="'
+    "base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; "
+    "img-src 'self' data: blob: https:"
+    '">'
+)
+
+
 def render_mirror_redirect(config: dict) -> str:
     """镜像域名自动跳到正式域名（放在 <head> 最前面，越早执行闪动越小）。
 
@@ -282,6 +298,7 @@ def layout(
     progress_html = '<div class="read-progress" id="readProgress"></div>' if show_progress else ""
     brand_initial = esc(str(site_title).strip()[:1].upper())
     theme_boot = THEME_BOOT
+    csp_meta = CSP_META
     mirror_script = render_mirror_redirect(config)
     appearance_html = render_appearance()
 
@@ -330,6 +347,7 @@ def layout(
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 {mirror_script}
+{csp_meta}
 <title>{esc(page_title)}</title>
 <meta name="description" content="{esc(desc)}">
 <meta name="author" content="{esc(config.get("author") or "")}">

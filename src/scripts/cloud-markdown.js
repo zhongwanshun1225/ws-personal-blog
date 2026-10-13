@@ -44,18 +44,62 @@
     return value || 'section';
   }
 
-  /* 去掉脚本 / 内联事件，避免云端内容把任意代码带进访客浏览器。
-     管理员本身是可信任的，但账号被盗时不该连带打穿全站。 */
+  /* 内容区禁用标签：能执行代码、能伪装站点 UI、或能做 DOM clobbering 的一律摘掉。
+     投稿是开放的，管理员又会在后台预览投稿，所以这里必须比"只防 script"更严。 */
+  var BANNED_TAGS = [
+    'script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'portal',
+    'style', 'link', 'meta', 'base', 'template', 'noscript',
+    'form', 'input', 'button', 'textarea', 'select', 'option', 'optgroup', 'fieldset',
+    'svg', 'math',
+  ];
+
+  /* 承载 URL 的属性：出现危险协议就整条摘掉（不只看 href/src）。 */
+  var URL_ATTRS = [
+    'href', 'src', 'srcset', 'xlink:href', 'action', 'formaction', 'poster', 'ping',
+    'background', 'dynsrc', 'lowsrc', 'longdesc', 'usemap', 'manifest', 'profile',
+    'archive', 'codebase', 'classid', 'cite', 'itemtype', 'data', 'srcdoc',
+  ];
+
+  /* 先剥掉控制字符与各类空白再判协议，挡掉 "java\tscript:"、"&#106;avascript:" 这类绕过 */
+  function dangerousUrl(value) {
+    var squashed = String(value == null ? '' : value).replace(
+      /[\u0000-\u0020\u007f\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g,
+      ''
+    );
+    /* data: 只放行图片（data:image/svg+xml 在 <img> 里不能执行脚本，但仍禁止出现在链接上） */
+    if (/^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon)[;,]/i.test(squashed)) return false;
+    return /^(?:javascript|vbscript|data|blob|filesystem|about|chrome|jar):/i.test(squashed);
+  }
+
+  /* 去掉脚本 / 内联事件 / 危险协议，避免云端内容把任意代码带进访客浏览器。
+     管理员本身是可信任的，但账号被盗、或普通用户投稿被预览时，不该连带打穿全站。
+
+     ⚠️ 这是一个「黑名单」净化器，只作为最后一道兜底。真正安全的前提是
+     调用方在使用本文件返回值之前不得再做二次 HTML 解析（见 decorate 的注释）。 */
   function sanitize(node) {
-    var banned = ['script', 'iframe', 'object', 'embed', 'style', 'link', 'meta', 'base'];
-    Array.prototype.forEach.call(node.querySelectorAll(banned.join(',')), function (el) {
+    Array.prototype.forEach.call(node.querySelectorAll(BANNED_TAGS.join(',')), function (el) {
       el.parentNode.removeChild(el);
     });
     Array.prototype.forEach.call(node.querySelectorAll('*'), function (el) {
       Array.prototype.slice.call(el.attributes).forEach(function (attr) {
         var name = attr.name.toLowerCase();
-        if (name.indexOf('on') === 0) el.removeAttribute(attr.name);
-        if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(attr.value)) {
+        /* 内联事件处理器 */
+        if (name.indexOf('on') === 0) {
+          el.removeAttribute(attr.name);
+          return;
+        }
+        /* id / name 可用于 DOM clobbering，正文里没有正当用途
+           （标题锚点由 decorate 在净化之后追加） */
+        if (name === 'id' || name === 'name') {
+          el.removeAttribute(attr.name);
+          return;
+        }
+        /* style 可做覆盖层钓鱼、也可用 CSS 外链做访问探测 */
+        if (name === 'style') {
+          el.removeAttribute(attr.name);
+          return;
+        }
+        if (URL_ATTRS.indexOf(name) >= 0 && dangerousUrl(attr.value)) {
           el.removeAttribute(attr.name);
         }
       });
@@ -71,6 +115,24 @@
     }
     usedIds[base] = 0;
     return base;
+  }
+
+  /* 在**已净化**的 DOM 上摘掉首段开头的 [!TIP] 标记文本，其余子节点原样保留。
+     绝不能用 innerHTML / marked 重建这一段 —— 那等于把已经清理过的内容
+     再解析一次，HTML 实体会在此期间被解码成真标签，从而绕过 sanitize。
+     （历史缺陷：`first.innerHTML = marked.parseInline(first.textContent)` 造成的存储型 XSS。） */
+  function stripCalloutMarker(paragraph, kind) {
+    var marker = new RegExp('^\\s*\\[!' + kind + '\\]\\s*\\n?', 'i');
+    var walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT, null);
+    var node;
+    while ((node = walker.nextNode())) {
+      if (marker.test(node.nodeValue)) {
+        node.nodeValue = node.nodeValue.replace(marker, '');
+        return;
+      }
+      /* 标记一定落在段落最前面的那个文本节点上；碰到非空文本就说明不在这一段 */
+      if (node.nodeValue.replace(/\s+/g, '') !== '') return;
+    }
   }
 
   function decorate(node) {
@@ -127,18 +189,14 @@
     Array.prototype.forEach.call(node.querySelectorAll('blockquote'), function (quote) {
       var first = quote.querySelector('p');
       if (!first) return;
-      var match = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n?([\s\S]*)$/i.exec(
-        first.textContent
-      );
+      var match = /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.exec(first.textContent);
       if (!match) return;
       var kind = match[1].toLowerCase();
       var meta = CALLOUTS[kind];
       if (!meta) return;
 
-      /* 用原始 HTML 重建首段，保留其中的行内标记 */
-      var rest = match[2];
-      var rebuilt = window.marked ? window.marked.parseInline(rest) : escapeHtml(rest);
-      first.innerHTML = rebuilt;
+      /* 只就地删掉开头那截标记，不重建 HTML（详见 stripCalloutMarker 注释） */
+      stripCalloutMarker(first, kind);
 
       var box = document.createElement('div');
       box.className = 'callout callout--' + kind;
