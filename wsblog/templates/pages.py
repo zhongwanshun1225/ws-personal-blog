@@ -2649,8 +2649,14 @@ def admin_page(*, config: dict, root: str = "") -> str:
             <button class="btn btn--ghost btn--sm" type="button" data-notify-copy-secret>复制</button>
           </div>
           <span class="field__hint">
-            这个密钥等于投递通道的口令，别贴到公开仓库。函数侧用同一个值调用
-            <code>notify_outbox_claim</code> 领取、<code>notify_outbox_ack</code> 回执。
+            这个密钥等于投递通道的口令，别贴到公开仓库。投递 worker（云函数
+            <code>ws-notify</code>）用它调 <code>notify_worker_config</code> 读通道配置、
+            <code>notify_outbox_claim</code> 领取待发消息、<code>notify_outbox_ack</code> 回执。
+          </span>
+          <span class="field__hint">
+            ⚠️ <strong>点「随机生成」后，必须把新值同样填进云函数 <code>ws-notify</code> 的环境变量
+            <code>NOTIFY_WORKER_SECRET</code></strong>，否则 worker 会被判 <code>SECRET_REJECTED</code>
+            而静默停止投递（队列会一直堆着不减少）。
           </span>
         </div>
         <div class="field field--full">
@@ -2708,6 +2714,7 @@ def admin_page(*, config: dict, root: str = "") -> str:
           失败 <strong data-outbox-failed>0</strong> ·
           已送达 <strong data-outbox-sent>0</strong>
         </span>
+        <span class="panel__hint" data-notify-worker>投递 worker：未知</span>
         <div class="panel__head-actions">
           <button class="btn btn--ghost btn--sm" type="button" data-outbox-retry-all>全部重试</button>
         </div>

@@ -1,0 +1,9 @@
+{
+  "name": "ws-notify",
+  "version": "1.0.0",
+  "description": "WS Blog 站外通知投递 worker：领取 notify_outbox 队列并经 Webhook / SMTP 发出（缺口 B3）",
+  "main": "index.js",
+  "dependencies": {
+    "nodemailer": "^6.9.13"
+  }
+}

@@ -1021,6 +1021,41 @@
         box.checked = kinds.indexOf(box.value) >= 0;
       });
     }
+    renderWorkerState();
+  }
+
+  /* B3：投递 worker 是定时云函数，不显示就等于「看不见的管道」。
+     它每轮跑完会写一条 notify.worker_state 心跳，这里翻译成人话。
+     注意：worker 只在「已启用 + 配了渠道」时才跑，所以未启用时未运行属正常。 */
+  function renderWorkerState() {
+    var el = q('[data-notify-worker]');
+    if (!el) return;
+    var state = settingValue('notify.worker_state');
+    var enabled = settingValue('notify.enabled') === true;
+    var webhook = String(settingValue('notify.webhook_url') || '').trim() !== '';
+    var mailOn = settingValue('mail.enabled') === true;
+
+    if (!enabled || (!webhook && !mailOn)) {
+      el.textContent = '投递 worker：未启用（开启开关并填好渠道后才会开始投递）';
+      el.removeAttribute('data-state');
+      return;
+    }
+    if (!state || !state.at) {
+      el.textContent = '投递 worker：还没有运行记录 —— 请确认云函数 ws-notify 已部署且密钥一致';
+      el.setAttribute('data-state', 'warn');
+      return;
+    }
+    var mins = Math.max(0, Math.round((Date.now() - new Date(state.at).getTime()) / 60000));
+    var label = mins <= 1 ? '刚刚' : mins + ' 分钟前';
+    if (mins > 15) {
+      el.textContent = '投递 worker：已停止（上次运行 ' + label + '，状态 ' +
+        (state.status || '未知') + '）';
+      el.setAttribute('data-state', 'warn');
+      return;
+    }
+    el.textContent = '投递 worker：正常（' + label + '运行，本轮发出 ' +
+      (state.sent || 0) + ' 条' + (state.failed ? '，失败 ' + state.failed + ' 条' : '') + '）';
+    el.setAttribute('data-state', 'ok');
   }
 
   var TEMPLATE_KEYS = [
