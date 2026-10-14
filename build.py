@@ -46,6 +46,13 @@ from wsblog.cloudposts import (  # noqa: E402
     fetch_public_profiles,
     fetch_published_cloud_posts,
 )
+from wsblog.cloudsettings import (  # noqa: E402
+    announcement_of,
+    fetch_public_settings,
+    maintenance_of,
+    publish_due_posts,
+    site_identity_of,
+)
 from wsblog.cloudstats import (  # noqa: E402
     apply_stats,
     fetch_post_stats,
@@ -78,6 +85,8 @@ from wsblog.templates.pages import (  # noqa: E402
     page_url,
     paginate,
     post_page,
+    PREVIEW_NOINDEX,
+    preview_page,
     project_detail_page,
     projects_page,
     related_posts_block,
@@ -101,6 +110,8 @@ CONFIG_FILE = os.path.join(ROOT_DIR, "site.config.json")
 ASSET_SCRIPTS = (
     "theme.js",
     "app.js",
+    "banner.js",       # B15 站内公告 / 维护模式（全局）
+    "analytics.js",    # B10 访问上报（全局，公开页埋点）
     "math.js",
     "cloud.js",
     "notify.js",
@@ -111,7 +122,11 @@ ASSET_SCRIPTS = (
     "notifications.js",
     "draft.js",
     "write.js",
+    "write-ext.js",    # A3/A4/A5 投稿页的定时 / 预览链接 / 修订历史
+    "preview.js",      # A4 预览分享页（preview.html）
+    "chart.js",        # B9 零依赖 SVG 图表（后台统计）
     "admin.js",
+    "admin-ext.js",    # B2–B17 新增面板（批量 / 垃圾 / 媒体 / 统计 / 设置 / 通知 / 备份 / 健康）
     "cloud-posts.js",
     "upload.js",
     "avatar-crop.js",
@@ -246,7 +261,10 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     public_profiles: dict[str, dict] = {}
     publishable_key = str(load_cloud_config().get("publishableKey") or "")
     if cloud:
-        # 把静态文章的 slug 传给云端归一化：云文章落静态详情页时若与静态
+        # A3 定时发布：把已到点的 scheduled 文章翻成 published（幂等）。
+        # posts_public 视图本身已经做了「publish_at <= now() 即可见」的兜底，
+        # 这一步只是把状态归正、并顺带触发「已发布」通知。失败不阻断构建。
+        publish_due_posts(site_origin=site_origin, publishable_key=publishable_key)        # 把静态文章的 slug 传给云端归一化：云文章落静态详情页时若与静态
         # 文章撞名，自动退回 post.html?slug=（客户端渲染兜底）
         cloud_posts = fetch_published_cloud_posts(
             site_origin=site_origin,
@@ -258,6 +276,30 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             site_origin=site_origin,
             publishable_key=publishable_key,
         )
+
+    # --- B15 站点公开设置（公告条 / 维护模式 / 站点标识）---
+    # 构建期烘一份进 HTML，保证「JS 未执行 / 纯静态部署」时公告与维护提示也在；
+    # 运行期 banner.js 会再用 settings_public() 校一次，站长改完不必等重建。
+    # 拉不到就退回 site.config.json 里写死的那份（可能是空的）。
+    if cloud:
+        public_settings = fetch_public_settings(
+            site_origin=site_origin, publishable_key=publishable_key
+        )
+        if public_settings:
+            ann_from_cloud = announcement_of(public_settings)
+            if ann_from_cloud.get("active"):
+                # 云端启用时才覆盖；云端没开公告不该把本地写死的公告也抹掉
+                config["announcement"] = ann_from_cloud
+            mnt_from_cloud = maintenance_of(public_settings)
+            if mnt_from_cloud.get("active") or (config.get("maintenance") or {}).get("active"):
+                config["maintenance"] = mnt_from_cloud
+            identity = site_identity_of(public_settings)
+            if identity.get("title"):
+                config["title"] = identity["title"]
+            if identity.get("description"):
+                config["description"] = identity["description"]
+            config["identity"] = identity
+
     all_posts = sorted(
         [*posts, *cloud_posts],
         key=lambda post: (0 if post.get("pinned") else 1, -post["date"].timestamp()),
@@ -750,7 +792,10 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["math.js", "cloud-markdown.js", "upload.js", "draft.js", "write.js"],
+                scripts=[
+                    "math.js", "cloud-markdown.js", "upload.js",
+                    "draft.js", "write.js", "write-ext.js",
+                ],
                 content=write_page(config=config, root=""),
             ),
         )
@@ -764,8 +809,27 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["math.js", "cloud-markdown.js", "upload.js", "draft.js", "admin.js"],
+                scripts=[
+                    "math.js", "cloud-markdown.js", "upload.js",
+                    "draft.js", "chart.js", "write-ext.js", "admin.js", "admin-ext.js",
+                ],
                 content=admin_page(config=config, root=""),
+            ),
+        )
+        # A4 预览分享页：纯客户端按 token 渲染，不预生成任何内容
+        write(
+            "preview.html",
+            layout(
+                config=config,
+                title="预览",
+                description="查看一条尚未发布的稿件快照。",
+                root="",
+                current="",
+                cloud=True,
+                extra_head=PREVIEW_NOINDEX,
+                vendor=["marked", "highlight"],
+                scripts=["math.js", "cloud-markdown.js", "preview.js"],
+                content=preview_page(config=config, root=""),
             ),
         )
         write(
@@ -995,6 +1059,29 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     )
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
+    # --- 构建信息（B14 健康检查面板读它，用来回答「线上是哪次构建」）---
+    write(
+        "assets/build-info.json",
+        json.dumps(
+            {
+                "generatedAt": iso_date(datetime.now().astimezone()),
+                "generatedTs": int(datetime.now().timestamp()),
+                "elapsedMs": elapsed_ms,
+                "cloud": cloud,
+                "origin": site_origin,
+                "posts": {"total": len(all_posts), "static": len(posts), "cloud": len(cloud_posts)},
+                "projects": len(projects),
+                "tags": len(tags),
+                "authors": len(authors),
+                "announcement": bool((config.get("announcement") or {}).get("active")),
+                "maintenance": bool((config.get("maintenance") or {}).get("active")),
+                "generator": "ws-blog",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+
     # 核心页（首页 / 项目 / 关于 / 标签 / 404）+ 归档各页 + 文章 / 项目 / 标签 / 作者详情 + 云端页面
     page_count = (
         5
@@ -1003,7 +1090,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         + len(projects)
         + len(tags)
         + len(authors)
-        + (6 if cloud else 0)
+        + (7 if cloud else 0)
     )
     drafts_note = "已包含" if any(post["draft"] for post in posts) else "未包含"
 

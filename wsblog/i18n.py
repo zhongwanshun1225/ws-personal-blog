@@ -552,6 +552,22 @@ MESSAGES: dict[str, dict[str, str]] = {
     "shortcuts.enter": {"zh-CN": "打开选中的结果", "en": "Open the selected result"},
     "shortcuts.toTop": {"zh-CN": "回到顶部", "en": "Back to top"},
     "shortcuts.tip": {"zh-CN": "在任意页面按 ? 都能回到这里。", "en": "Press ? on any page to come back here."},
+
+    # ---------- 站内公告条 / 维护模式（B15）----------
+    # 公告正文与维护说明由站长在后台填，是内容不是界面文案，所以不进字典；
+    # 这里只放固定的界面词。
+    "banner.title": {"zh-CN": "站内公告", "en": "Announcement"},
+    "banner.close": {"zh-CN": "关闭公告", "en": "Dismiss announcement"},
+    "banner.more": {"zh-CN": "详情", "en": "Details"},
+    "maintenance.title": {"zh-CN": "站点正在维护", "en": "Under maintenance"},
+    "maintenance.default": {
+        "zh-CN": "站点正在维护，稍后就回来。",
+        "en": "The site is under maintenance and will be back shortly.",
+    },
+    "maintenance.adminHint": {
+        "zh-CN": "你是管理员，可以用 ?maintenance=off 绕过这层遮罩继续检查。",
+        "en": "You're an admin — append ?maintenance=off to bypass this overlay.",
+    },
 }
 
 

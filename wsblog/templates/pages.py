@@ -1733,6 +1733,11 @@ def write_page(*, config: dict, root: str = "") -> str:
           <span class="field__label">摘要</span>
           <input class="field__input" type="text" name="summary" placeholder="一句话说明这篇文章讲了什么" maxlength="200">
         </label>
+        <label class="field">
+          <span class="field__label">期望发布时间（可留空）</span>
+          <input class="field__input" type="datetime-local" data-write-schedule>
+          <span class="field__hint">留空 = 交由站长在审核时决定；填未来时间 = 审核通过后到点自动上线，不填就是通过即上线。</span>
+        </label>
         <label class="field field--full">
           <span class="field__label">正文（Markdown）</span>
           <textarea class="field__input field__textarea mono" rows="18" name="content_md"
@@ -1771,8 +1776,56 @@ def write_page(*, config: dict, root: str = "") -> str:
           <li>未通过的稿件会附上理由，改完可以再次提交。</li>
           <li>已发布的文章<strong>可以自己改</strong>：受信任作者改完立即生效；其他人改完进入待审，
             审核期间线上仍是原文，不会出现「改稿即下架」的断档。</li>
+          <li>填了「期望发布时间」而那个时间还没到，文章会先<strong>挂着</strong>，到点自动上线。</li>
           <li>请勿提交违规、侵权或与本站主题无关的内容。</li>
         </ul>
+      </div>
+
+      <div class="panel" data-preview-panel>
+        <div class="panel__head">
+          <h2 class="panel__title">预览链接</h2>
+          <span class="panel__hint">给别人看还没发布的稿子</span>
+        </div>
+        <p class="side-note" data-preview-hint>
+          先保存草稿，再生成一条随机链接。对方无需注册就能看到这一版内容；
+          链接只能读，不能改，也可以随时撤销。
+        </p>
+        <div class="inline-form inline-form--tight">
+          <select class="field__input field__input--select" data-preview-days>
+            <option value="1">1 天</option>
+            <option value="7" selected>7 天</option>
+            <option value="30">30 天</option>
+            <option value="90">90 天</option>
+          </select>
+          <button class="btn btn--primary btn--sm" type="button" data-preview-create>生成链接</button>
+        </div>
+        <ul class="stack stack--links" data-preview-list>
+          <li class="stack-empty">保存草稿后可用</li>
+        </ul>
+      </div>
+
+      <div class="panel" data-revisions-panel>
+        <div class="panel__head">
+          <h2 class="panel__title">修订历史</h2>
+          <span class="panel__hint">保留最近 30 版</span>
+        </div>
+        <p class="side-note">
+          每次内容有改动就自动存一版。改坏了可以回滚 ——
+          受信任作者立即生效，其他人会转成待审，线上不受影响。
+        </p>
+        <ul class="stack stack--links" data-revision-list>
+          <li class="stack-empty">保存草稿后可用</li>
+        </ul>
+        <div class="revision-view" data-revision-view hidden>
+          <div class="revision-view__head">
+            <span data-revision-title></span>
+            <button class="btn btn--ghost btn--sm" type="button" data-revision-close>收起</button>
+          </div>
+          <pre class="revision-view__body" data-revision-body></pre>
+          <div class="revision-view__foot">
+            <button class="btn btn--ghost btn--sm" type="button" data-revision-restore>回滚到这一版</button>
+          </div>
+        </div>
       </div>
     </aside>
   </div>
@@ -1783,50 +1836,131 @@ def write_page(*, config: dict, root: str = "") -> str:
 
 def admin_page(*, config: dict, root: str = "") -> str:
     return f"""<div class="wrap" data-admin>
-  <div class="page-head">
-    <span class="eyebrow">Admin</span>
-    <h1 class="article-head__title" style="margin-top:14px">管理后台</h1>
-    <p class="article-head__summary" style="margin-top:18px">
-      在线撰写与发布文章、管理评论与用户。这里的每一项操作都会经过服务端权限校验，非管理员无法调用。
-    </p>
-    <div class="hero__actions" style="margin-top:24px">
+  <div class="page-head admin-head">
+    <div class="admin-head__text">
+      <span class="eyebrow">Admin</span>
+      <h1 class="article-head__title" style="margin-top:14px">管理后台</h1>
+      <p class="article-head__summary" style="margin-top:18px">
+        在线撰写与发布文章、管理评论与用户。这里的每一项操作都会经过服务端权限校验，非管理员无法调用。
+      </p>
+    </div>
+    <div class="admin-head__actions">
       <button class="btn btn--ghost btn--sm" type="button" data-admin-refresh>刷新数据</button>
       <a class="btn btn--ghost btn--sm" href="{root}index.html">返回站点</a>
     </div>
   </div>
 
-  <div class="admin-stats">
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-users>0</div><div class="admin-stat__label">注册用户</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-disabled>0</div><div class="admin-stat__label">已禁用账号</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-comments>0</div><div class="admin-stat__label">评论总数</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-today>0</div><div class="admin-stat__label">24h 新评论</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-views>0</div><div class="admin-stat__label">总阅读量</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-hidden>0</div><div class="admin-stat__label">已隐藏评论</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-pending-comments>0</div><div class="admin-stat__label">待审评论</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-likes>0</div><div class="admin-stat__label">点赞总数</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-posts>0</div><div class="admin-stat__label">在线文章</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-drafts>0</div><div class="admin-stat__label">草稿</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-pending>0</div><div class="admin-stat__label">待审核投稿</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-edit-pending>0</div><div class="admin-stat__label">待审改稿</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-open-reports>0</div><div class="admin-stat__label">待处理举报</div></div>
-    <div class="admin-stat"><div class="admin-stat__value" data-stat-email-requests>0</div><div class="admin-stat__label">邮箱变更申请</div></div>
-  </div>
+  <section class="admin-triage" aria-label="待你处理">
+    <div class="admin-triage__head">
+      <h2 class="admin-section__title">待你处理</h2>
+      <span class="admin-section__hint">点卡片直接跳到对应分区</span>
+    </div>
+    <div class="triage-grid">
+      <button class="triage-card" type="button" data-admin-goto="review" data-triage="submission">
+        <span class="triage-card__top">
+          <span class="triage-card__label">待审核投稿</span>
+          <span class="triage-card__go" aria-hidden="true">去处理 →</span>
+        </span>
+        <span class="triage-card__value" data-triage-value data-stat-pending>0</span>
+        <span class="triage-card__hint">读者投的稿，通过后前台才可见</span>
+      </button>
+      <button class="triage-card" type="button" data-admin-goto="review" data-triage="edit">
+        <span class="triage-card__top">
+          <span class="triage-card__label">待审改稿</span>
+          <span class="triage-card__go" aria-hidden="true">去处理 →</span>
+        </span>
+        <span class="triage-card__value" data-triage-value data-stat-edit-pending>0</span>
+        <span class="triage-card__hint">已发布文章的修改，线上暂时还是旧版</span>
+      </button>
+      <button class="triage-card" type="button" data-admin-goto="reports" data-triage="report">
+        <span class="triage-card__top">
+          <span class="triage-card__label">待处理举报</span>
+          <span class="triage-card__go" aria-hidden="true">去处理 →</span>
+        </span>
+        <span class="triage-card__value" data-triage-value data-stat-open-reports>0</span>
+        <span class="triage-card__hint">读者举报的评论，处理后会通知举报人</span>
+      </button>
+      <button class="triage-card" type="button" data-admin-goto="reports" data-triage="email">
+        <span class="triage-card__top">
+          <span class="triage-card__label">邮箱变更申请</span>
+          <span class="triage-card__go" aria-hidden="true">去处理 →</span>
+        </span>
+        <span class="triage-card__value" data-triage-value data-stat-email-requests>0</span>
+        <span class="triage-card__hint">需去云控制台改邮箱后再回来确认</span>
+      </button>
+    </div>
+  </section>
 
-  <div class="admin-tabs" role="tablist" aria-label="后台分区">
+  <details class="admin-metrics" data-admin-metrics>
+    <summary class="admin-metrics__summary">
+      <span class="admin-metrics__title">站点概况</span>
+      <span class="admin-metrics__hint">注册量、阅读量、评论与文章存量等只读指标</span>
+    </summary>
+    <div class="admin-stats">
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-users>0</div><div class="admin-stat__label">注册用户</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-disabled>0</div><div class="admin-stat__label">已禁用账号</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-comments>0</div><div class="admin-stat__label">评论总数</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-today>0</div><div class="admin-stat__label">24h 新评论</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-views>0</div><div class="admin-stat__label">总阅读量</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-hidden>0</div><div class="admin-stat__label">已隐藏评论</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-pending-comments>0</div><div class="admin-stat__label">待审评论</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-likes>0</div><div class="admin-stat__label">点赞总数</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-posts>0</div><div class="admin-stat__label">在线文章</div></div>
+      <div class="admin-stat"><div class="admin-stat__value" data-stat-drafts>0</div><div class="admin-stat__label">草稿</div></div>
+    </div>
+  </details>
+
+  <nav class="admin-tabs" role="tablist" aria-label="后台分区">
+    <span class="admin-tabs__label" role="presentation">内容</span>
     <button class="admin-tab is-active" type="button" role="tab" aria-selected="true" data-admin-tab="posts">文章管理</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="review">内容审核 <span class="admin-tab__badge" data-review-badge hidden>0</span></button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="comments">评论管理</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="spam">垃圾评论 <span class="admin-tab__badge" data-spam-badge hidden>0</span></button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="reports">举报与申请 <span class="admin-tab__badge" data-reports-badge hidden>0</span></button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="media">媒体库</button>
+    <span class="admin-tabs__sep" aria-hidden="true"></span>
+    <span class="admin-tabs__label" role="presentation">系统</span>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="stats">统计与访问</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="settings">站点设置</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="notify">通知与邮件 <span class="admin-tab__badge" data-outbox-badge hidden>0</span></button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="data">数据与备份</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="users">用户</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="admins">管理员</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="audit">操作日志</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="system">安全与健康</button>
+  </nav>
+
+  <div class="admin-bulkbar" data-bulkbar hidden>
+    <span class="admin-bulkbar__count">已选 <strong data-bulk-count>0</strong> 项</span>
+    <span class="admin-bulkbar__scope" data-bulk-scope></span>
+    <div class="admin-bulkbar__actions" data-bulk-actions></div>
+    <button class="btn btn--ghost btn--xs" type="button" data-bulk-clear>取消选择</button>
   </div>
 
   <section class="admin-panel" data-admin-panel="audit" hidden>
     <div class="panel">
       <div class="panel__head">
         <h2 class="panel__title">管理操作日志</h2>
-        <span class="panel__hint">删帖、删评论、审核、用户封禁、管理员白名单变更等敏感操作的服务端留痕（最近 100 条）</span>
+        <span class="panel__hint">
+          删帖、删评论、审核、用户封禁、配置变更等敏感操作的服务端留痕（共 <span data-audit-total>0</span> 条）
+        </span>
+      </div>
+      <div class="admin-toolbar admin-toolbar--wrap">
+        <input class="field__input" type="search" placeholder="搜索操作者 / 动作 / 备注 / 对象 ID" data-audit-search>
+        <select class="field__input field__input--select" data-audit-action>
+          <option value="">全部动作</option>
+        </select>
+        <input class="field__input" type="text" placeholder="操作者（邮箱或 ID）" data-audit-actor>
+        <label class="field__inline">
+          <span>从</span>
+          <input class="field__input" type="date" data-audit-from>
+        </label>
+        <label class="field__inline">
+          <span>到</span>
+          <input class="field__input" type="date" data-audit-to>
+        </label>
+        <button class="btn btn--ghost btn--sm" type="button" data-audit-reset>重置</button>
+        <button class="btn btn--ghost btn--sm" type="button" data-audit-export>导出当前筛选（CSV）</button>
       </div>
       <div class="admin-table-wrap">
         <table class="admin-table">
@@ -1836,15 +1970,19 @@ def admin_page(*, config: dict, root: str = "") -> str:
           </tbody>
         </table>
       </div>
+      <div class="admin-pager" data-audit-pager></div>
     </div>
   </section>
 
   <section class="admin-panel" data-admin-panel="posts">
-    <div class="admin-split">
+    <div class="admin-editor" data-editor-shell hidden>
       <div class="panel panel--editor">
         <div class="panel__head">
           <h2 class="panel__title" data-editor-title>写一篇新文章</h2>
-          <span class="panel__hint">Markdown 语法，支持代码块与提示块</span>
+          <div class="panel__head-actions">
+            <span class="panel__hint">Markdown 语法，支持代码块与提示块</span>
+            <button class="btn btn--ghost btn--sm" type="button" data-editor-close>收起编辑器</button>
+          </div>
         </div>
         <div class="draft-banner" data-admin-draft-banner hidden>
           <div class="draft-banner__text" data-admin-draft-text></div>
@@ -1880,7 +2018,13 @@ def admin_page(*, config: dict, root: str = "") -> str:
             <select class="field__input" name="status">
               <option value="draft">草稿（不公开）</option>
               <option value="published">已发布</option>
+              <option value="scheduled">定时发布</option>
             </select>
+          </label>
+          <label class="field">
+            <span class="field__label">发布时间（定时需填）</span>
+            <input class="field__input" type="datetime-local" data-admin-schedule>
+            <span class="field__hint">状态选「定时发布」时必填且要在未来；到点前前台不可见。</span>
           </label>
           <div class="form-grid__foot form-grid__foot--wide">
             <button class="btn btn--primary btn--sm" type="button" data-post-save>保存草稿</button>
@@ -1892,86 +2036,157 @@ def admin_page(*, config: dict, root: str = "") -> str:
           </div>
         </form>
         <div class="editor-preview" data-post-preview-box hidden></div>
-      </div>
 
-      <div class="panel">
-        <div class="panel__head">
-          <h2 class="panel__title">全部在线文章</h2>
-          <span class="panel__hint">含管理员发布与用户投稿，共 <span data-post-count>0</span> 篇</span>
+        <div class="admin-editor__panels">
+          <div class="panel" data-preview-panel>
+            <div class="panel__head">
+              <h2 class="panel__title">预览链接</h2>
+              <span class="panel__hint">给别人看还没发布的稿子</span>
+            </div>
+            <p class="side-note" data-preview-hint>
+              先保存草稿，再生成一条随机链接。对方无需注册就能看到这一版内容；
+              链接只能读，不能改，也可以随时撤销。
+            </p>
+            <div class="inline-form inline-form--tight">
+              <select class="field__input field__input--select" data-preview-days>
+                <option value="1">1 天</option>
+                <option value="7" selected>7 天</option>
+                <option value="30">30 天</option>
+                <option value="90">90 天</option>
+              </select>
+              <button class="btn btn--primary btn--sm" type="button" data-preview-create>生成链接</button>
+            </div>
+            <ul class="stack stack--links" data-preview-list>
+              <li class="stack-empty">保存草稿后可用</li>
+            </ul>
+          </div>
+
+          <div class="panel" data-revisions-panel>
+            <div class="panel__head">
+              <h2 class="panel__title">修订历史</h2>
+              <span class="panel__hint">保留最近 30 版</span>
+            </div>
+            <p class="side-note">
+              每次内容有改动就自动存一版，改坏了可以一键回滚。管理员回滚立即生效。
+            </p>
+            <ul class="stack stack--links" data-revision-list>
+              <li class="stack-empty">保存草稿后可用</li>
+            </ul>
+            <div class="revision-view" data-revision-view hidden>
+              <div class="revision-view__head">
+                <span data-revision-title></span>
+                <button class="btn btn--ghost btn--sm" type="button" data-revision-close>收起</button>
+              </div>
+              <pre class="revision-view__body" data-revision-body></pre>
+              <div class="revision-view__foot">
+                <button class="btn btn--ghost btn--sm" type="button" data-revision-restore>回滚到这一版</button>
+              </div>
+            </div>
+          </div>
         </div>
+      </div>
+    </div>
+
+    <div class="panel admin-list">
+      <div class="panel__head">
+        <h2 class="panel__title">全部在线文章</h2>
+        <div class="panel__head-actions">
+          <span class="panel__hint">含管理员发布与用户投稿，共 <span data-post-count>0</span> 篇</span>
+          <button class="btn btn--primary btn--sm" type="button" data-editor-open>写新文章</button>
+        </div>
+      </div>
         <div class="admin-toolbar">
           <input class="field__input" type="search" placeholder="搜索标题 / slug / 作者 / 邮箱" data-post-search>
           <select class="field__input field__input--select" data-post-status>
             <option value="all">全部状态</option>
             <option value="pending">待审核</option>
             <option value="published">已发布</option>
+            <option value="scheduled">定时未到</option>
+            <option value="edit_pending">待审改稿</option>
             <option value="draft">草稿</option>
             <option value="rejected">未通过</option>
+            <option value="reviewed">已审过</option>
           </select>
+          <label class="admin-check">
+            <input type="checkbox" data-post-select-all>
+            <span>全选本页</span>
+          </label>
         </div>
         <div class="admin-table-wrap">
-          <table class="admin-table">
-            <thead><tr><th>标题</th><th>作者</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
+          <table class="admin-table admin-table--cards">
+            <thead>
+              <tr>
+                <th class="admin-table__pick"></th>
+                <th>标题</th><th>作者</th><th>状态</th><th>排序 / 定时</th><th>更新时间</th><th>操作</th>
+              </tr>
+            </thead>
             <tbody data-admin-posts>
-              <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+              <tr><td colspan="7" class="admin-empty">加载中…</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="admin-pager" data-post-pager></div>
-      </div>
+      <div class="admin-pager" data-post-pager></div>
     </div>
   </section>
 
   <section class="admin-panel" data-admin-panel="review" hidden>
     <div class="panel">
       <div class="panel__head">
-        <h2 class="panel__title">待审核投稿</h2>
-        <span class="panel__hint">普通用户提交的稿件，通过后才会出现在前台（当前 <span data-review-count>0</span> 篇待处理）</span>
+        <h2 class="panel__title">内容审核</h2>
+        <span class="panel__hint">三个队列分开看，不用一路往下滚</span>
       </div>
-      <div class="admin-table-wrap">
-        <table class="admin-table">
-          <thead><tr><th>标题</th><th>作者</th><th>提交时间</th><th>篇幅</th><th>操作</th></tr></thead>
-          <tbody data-admin-review>
-            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
-          </tbody>
-        </table>
+      <div class="admin-subtabs" role="tablist" aria-label="审核队列">
+        <button class="admin-subtab is-active" type="button" role="tab" aria-selected="true" data-review-tab="pending">
+          待审投稿 <span class="admin-subtab__count" data-review-count>0</span>
+        </button>
+        <button class="admin-subtab" type="button" role="tab" aria-selected="false" data-review-tab="edits">
+          待审改稿 <span class="admin-subtab__count" data-edit-count>0</span>
+        </button>
+        <button class="admin-subtab" type="button" role="tab" aria-selected="false" data-review-tab="done">
+          已处理
+        </button>
       </div>
-      <div class="admin-pager" data-review-pager></div>
-    </div>
 
-    <div class="panel">
-      <div class="panel__head">
-        <h2 class="panel__title">待审改稿</h2>
-        <span class="panel__hint">
-          作者对<strong>已发布文章</strong>的修改。线上仍是旧版本 —— 读者在审核期间看到的是原文，通过后才替换
-          （当前 <span data-edit-count>0</span> 篇待处理）
-        </span>
+      <div class="admin-review-section" data-review-section="pending">
+        <p class="admin-review__note">普通用户提交的稿件。通过后才会出现在前台。</p>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead><tr><th>标题</th><th>作者</th><th>提交时间</th><th>篇幅</th><th>操作</th></tr></thead>
+            <tbody data-admin-review>
+              <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="admin-pager" data-review-pager></div>
       </div>
-      <div class="admin-table-wrap">
-        <table class="admin-table">
-          <thead><tr><th>新标题 / 原标题</th><th>作者</th><th>提交时间</th><th>操作</th></tr></thead>
-          <tbody data-admin-edits>
-            <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="admin-pager" data-edit-pager></div>
-    </div>
 
-    <div class="panel">
-      <div class="panel__head">
-        <h2 class="panel__title">已处理投稿</h2>
-        <span class="panel__hint">最近审核过的稿件，可随时下架或重新通过</span>
+      <div class="admin-review-section" data-review-section="edits" hidden>
+        <p class="admin-review__note">
+          作者对<strong>已发布文章</strong>的修改。线上仍是旧版本 —— 读者在审核期间看到的是原文，通过后才替换。
+        </p>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead><tr><th>新标题 / 原标题</th><th>作者</th><th>提交时间</th><th>操作</th></tr></thead>
+            <tbody data-admin-edits>
+              <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="admin-pager" data-edit-pager></div>
       </div>
-      <div class="admin-table-wrap">
-        <table class="admin-table">
-          <thead><tr><th>标题</th><th>作者</th><th>结果</th><th>审核时间</th><th>操作</th></tr></thead>
-          <tbody data-admin-reviewed>
-            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
-          </tbody>
-        </table>
+
+      <div class="admin-review-section" data-review-section="done" hidden>
+        <p class="admin-review__note">最近审核过的稿件，可随时下架或重新通过。</p>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead><tr><th>标题</th><th>作者</th><th>结果</th><th>审核时间</th><th>操作</th></tr></thead>
+            <tbody data-admin-reviewed>
+              <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="admin-pager" data-reviewed-pager></div>
       </div>
-      <div class="admin-pager" data-reviewed-pager></div>
     </div>
   </section>
 
@@ -1988,35 +2203,45 @@ def admin_page(*, config: dict, root: str = "") -> str:
           <button class="chip" type="button" data-comment-filter="pending">待审</button>
           <button class="chip" type="button" data-comment-filter="visible">显示中</button>
           <button class="chip" type="button" data-comment-filter="hidden">已隐藏</button>
+          <button class="chip" type="button" data-comment-filter="spam">疑似垃圾</button>
         </div>
+        <label class="admin-check">
+          <input type="checkbox" data-comment-select-all>
+          <span>全选本页</span>
+        </label>
       </div>
       <div class="admin-table-wrap">
-        <table class="admin-table">
-          <thead><tr><th>作者 / 文章</th><th>内容</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+        <table class="admin-table admin-table--cards">
+          <thead>
+            <tr>
+              <th class="admin-table__pick"></th>
+              <th>作者 / 文章</th><th>内容</th><th>风险</th><th>时间</th><th>状态</th><th>操作</th>
+            </tr>
+          </thead>
           <tbody data-admin-comments>
-            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+            <tr><td colspan="7" class="admin-empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>
       <div class="admin-pager" data-comment-pager></div>
     </div>
 
-    <div class="panel">
-      <div class="panel__head">
-        <h2 class="panel__title">敏感词</h2>
-        <span class="panel__hint">
-          命中即给评论打上标记留待审（不会自动隐藏）。所有新评论本来就要过审核，这里只是帮你先看一眼
-        </span>
+    <details class="admin-fold">
+      <summary class="admin-fold__summary">
+        <span class="admin-fold__title">敏感词</span>
+        <span class="admin-fold__hint">命中只给评论打标记、不自动隐藏（所有新评论本来就要过审，这里只是帮你先看一眼）</span>
+      </summary>
+      <div class="admin-fold__body">
+        <div class="admin-toolbar">
+          <input class="field__input" type="text" maxlength="40" placeholder="输入要拦截的词，如 加微信"
+                 data-word-input>
+          <button class="btn btn--primary btn--sm" type="button" data-word-add>添加</button>
+        </div>
+        <div class="chip-row" data-word-list>
+          <span class="admin-empty">加载中…</span>
+        </div>
       </div>
-      <div class="admin-toolbar">
-        <input class="field__input" type="text" maxlength="40" placeholder="输入要拦截的词，如 加微信"
-               data-word-input>
-        <button class="btn btn--primary btn--sm" type="button" data-word-add>添加</button>
-      </div>
-      <div class="chip-row" data-word-list>
-        <span class="admin-empty">加载中…</span>
-      </div>
-    </div>
+    </details>
   </section>
 
   <section class="admin-panel" data-admin-panel="reports" hidden>
@@ -2035,12 +2260,21 @@ def admin_page(*, config: dict, root: str = "") -> str:
           <button class="chip" type="button" data-report-filter="resolved">已处理</button>
           <button class="chip" type="button" data-report-filter="dismissed">已忽略</button>
         </div>
+        <label class="admin-check">
+          <input type="checkbox" data-report-select-all>
+          <span>全选本页</span>
+        </label>
       </div>
       <div class="admin-table-wrap">
-        <table class="admin-table">
-          <thead><tr><th>举报人</th><th>被举报评论</th><th>原因</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+        <table class="admin-table admin-table--cards">
+          <thead>
+            <tr>
+              <th class="admin-table__pick"></th>
+              <th>举报人</th><th>被举报评论</th><th>原因</th><th>时间</th><th>状态</th><th>操作</th>
+            </tr>
+          </thead>
           <tbody data-admin-reports>
-            <tr><td colspan="6" class="admin-empty">加载中…</td></tr>
+            <tr><td colspan="7" class="admin-empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -2081,15 +2315,24 @@ def admin_page(*, config: dict, root: str = "") -> str:
           <option value="deleted">已注销</option>
           <option value="email">有待处理邮箱申请</option>
           <option value="admin">管理员</option>
+          <option value="editor">编辑</option>
         </select>
+        <label class="admin-check">
+          <input type="checkbox" data-user-select-all>
+          <span>全选本页</span>
+        </label>
       </div>
       <div class="admin-table-wrap">
-        <table class="admin-table">
+        <table class="admin-table admin-table--cards">
           <thead>
-            <tr><th>昵称 / ID</th><th>邮箱</th><th>邮箱状态</th><th>状态</th><th>角色</th><th>改稿权限</th><th>互动</th><th>注册时间</th><th>操作</th></tr>
+            <tr>
+              <th class="admin-table__pick"></th>
+              <th>昵称 / ID</th><th>邮箱</th><th>邮箱状态</th><th>状态</th><th>角色</th>
+              <th>改稿权限</th><th>两步验证</th><th>发布数</th><th>互动</th><th>注册时间</th><th>操作</th>
+            </tr>
           </thead>
           <tbody data-admin-users>
-            <tr><td colspan="9" class="admin-empty">加载中…</td></tr>
+            <tr><td colspan="12" class="admin-empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -2115,6 +2358,481 @@ def admin_page(*, config: dict, root: str = "") -> str:
             <tr><td colspan="4" class="admin-empty">加载中…</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 垃圾评论（B17） ==================== -->
+  <section class="admin-panel" data-admin-panel="spam" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">反垃圾队列</h2>
+        <span class="panel__hint">
+          按可疑度从高到低排。评分只做<strong>提示</strong>：达到「直接隐藏」阈值的会自动隐藏，
+          其余仍进待审 —— 机器判错了不会直接毁掉一条正常评论
+        </span>
+      </div>
+      <div class="admin-toolbar admin-toolbar--wrap">
+        <span class="panel__hint">
+          当前阈值：<strong data-spam-hold>4</strong> 分进待审、
+          <strong data-spam-hide>7</strong> 分自动隐藏（在「站点设置」里改）
+        </span>
+        <label class="admin-check">
+          <input type="checkbox" data-spam-select-all>
+          <span>全选本页</span>
+        </label>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table admin-table--cards">
+          <thead>
+            <tr><th class="admin-table__pick"></th><th>作者 / 文章</th><th>内容</th><th>判定</th><th>来源</th><th>操作</th></tr>
+          </thead>
+          <tbody data-admin-spam>
+            <tr><td colspan="6" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="admin-pager" data-spam-pager></div>
+    </div>
+  </section>
+
+  <!-- ==================== 媒体库（B7） ==================== -->
+  <section class="admin-panel" data-admin-panel="media" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">媒体库</h2>
+        <span class="panel__hint">
+          共 <span data-media-total>0</span> 个文件，占用 <span data-media-size>0 B</span>
+        </span>
+        <div class="panel__head-actions">
+          <button class="btn btn--primary btn--sm" type="button" data-media-upload>上传图片</button>
+        </div>
+      </div>
+      <div class="admin-toolbar">
+        <input class="field__input" type="search" placeholder="搜索文件名 / 路径" data-media-search>
+        <select class="field__input field__input--select" data-media-folder>
+          <option value="">全部分组</option>
+        </select>
+      </div>
+      <p class="admin-hint-line">
+        上传前会按当前分组自动归档；缩略图直接用公开地址，不额外占空间。
+        已在编辑器里插入过的图片也会在下次上传同名文件时自动登记。
+      </p>
+      <div class="media-grid" data-media-grid>
+        <div class="admin-empty">加载中…</div>
+      </div>
+      <div class="admin-pager" data-media-pager></div>
+    </div>
+  </section>
+
+  <!-- ==================== 统计与访问（B9 / B10） ==================== -->
+  <section class="admin-panel" data-admin-panel="stats" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">增长趋势</h2>
+        <div class="panel__head-actions">
+          <select class="field__input field__input--select" data-stats-days>
+            <option value="7">最近 7 天</option>
+            <option value="30" selected>最近 30 天</option>
+            <option value="90">最近 90 天</option>
+            <option value="180">最近 180 天</option>
+          </select>
+        </div>
+      </div>
+      <div class="chart-box" data-stats-chart>
+        <p class="chart-empty">加载中…</p>
+      </div>
+      <div class="admin-stats">
+        <div class="admin-stat"><div class="admin-stat__value" data-trend-comments>0</div><div class="admin-stat__label">区间新增评论</div></div>
+        <div class="admin-stat"><div class="admin-stat__value" data-trend-posts>0</div><div class="admin-stat__label">区间新增文章</div></div>
+        <div class="admin-stat"><div class="admin-stat__value" data-trend-views>0</div><div class="admin-stat__label">区间浏览量</div></div>
+        <div class="admin-stat"><div class="admin-stat__value" data-trend-users>0</div><div class="admin-stat__label">区间新增用户</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">热门文章</h2>
+        <span class="panel__hint">按累计浏览量排序</span>
+      </div>
+      <div class="chart-box" data-top-posts>
+        <p class="chart-empty">加载中…</p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">访问分析</h2>
+        <span class="panel__hint">PV / UV 均剔除机器人，同会话 30 分钟内同一路径只计一次</span>
+      </div>
+      <div class="admin-stats">
+        <div class="admin-stat"><div class="admin-stat__value" data-an-pv>0</div><div class="admin-stat__label">浏览量 PV</div></div>
+        <div class="admin-stat"><div class="admin-stat__value" data-an-uv>0</div><div class="admin-stat__label">访客数 UV</div></div>
+        <div class="admin-stat"><div class="admin-stat__value" data-an-bot>0</div><div class="admin-stat__label">机器人请求</div></div>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3 class="chart-card__title">PV / UV 走势</h3>
+          <div class="chart-box" data-an-series></div>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-card__title">热门页面</h3>
+          <div class="chart-box" data-an-paths></div>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-card__title">来源站点</h3>
+          <div class="chart-box" data-an-referrers></div>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-card__title">访客环境</h3>
+          <div class="chart-box" data-an-uas></div>
+        </div>
+      </div>
+      <p class="admin-hint-line">
+        只记录路径、来源域名、浏览器大类与一个按日轮换的会话指纹；不存 IP、不存完整 UA、不写 Cookie。
+      </p>
+    </div>
+  </section>
+
+  <!-- ==================== 站点设置（B6 / B15 / B16） ==================== -->
+  <section class="admin-panel" data-admin-panel="settings" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">站点标识</h2>
+        <span class="panel__hint">
+          这里改的是<strong>运行期</strong>的公开信息（公告条、维护模式立刻生效）；
+          站点标题等会同时写进下次构建，需要重新部署才会替换 HTML 里的静态文案
+        </span>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field__label">站点标题</span>
+          <input class="field__input" type="text" data-set="site.title" maxlength="60">
+        </label>
+        <label class="field">
+          <span class="field__label">副标题 / 标语</span>
+          <input class="field__input" type="text" data-set="site.tagline" maxlength="80">
+        </label>
+        <label class="field field--full">
+          <span class="field__label">站点描述（用于搜索引擎摘要）</span>
+          <input class="field__input" type="text" data-set="site.description" maxlength="200">
+        </label>
+        <label class="field field--full">
+          <span class="field__label">关键词（逗号分隔）</span>
+          <input class="field__input" type="text" data-set="site.keywords" maxlength="200">
+        </label>
+        <label class="field">
+          <span class="field__label">备案号</span>
+          <input class="field__input" type="text" data-set="site.footer_icp" maxlength="60">
+        </label>
+        <label class="field">
+          <span class="field__label">联系邮箱</span>
+          <input class="field__input" type="email" data-set="contact.email" maxlength="120">
+        </label>
+      </div>
+      <div class="form-grid__foot">
+        <button class="btn btn--primary btn--sm" type="button" data-settings-save>保存站点标识</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">公告条</h2>
+        <span class="panel__hint">出现在全站页头下方，读者可单独关闭；保存后立即生效，无需重新部署</span>
+      </div>
+      <div class="form-grid">
+        <label class="field field--switch">
+          <input type="checkbox" data-set-flag="banner.announcement" data-key="active">
+          <span class="field__label">启用公告条</span>
+        </label>
+        <label class="field">
+          <span class="field__label">语气</span>
+          <select class="field__input field__input--select" data-set="banner.announcement" data-key="level">
+            <option value="info">普通提示</option>
+            <option value="warn">警告 / 变更</option>
+            <option value="success">好消息</option>
+          </select>
+        </label>
+        <label class="field field--full">
+          <span class="field__label">公告正文（一句话，别写成小作文）</span>
+          <input class="field__input" type="text" data-set="banner.announcement" data-key="text" maxlength="200">
+        </label>
+      </div>
+      <div class="form-grid__foot">
+        <button class="btn btn--primary btn--sm" type="button" data-settings-save>保存公告条</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">维护模式</h2>
+        <span class="panel__hint">
+          打开后全站盖一层遮罩。管理员带 <code>?maintenance=off</code> 可自行绕过（服务端会确认身份）
+        </span>
+      </div>
+      <div class="form-grid">
+        <label class="field field--switch">
+          <input type="checkbox" data-set-flag="banner.maintenance" data-key="active">
+          <span class="field__label">进入维护模式</span>
+        </label>
+        <label class="field field--switch">
+          <input type="checkbox" data-set-flag="banner.maintenance" data-key="allow_admin">
+          <span class="field__label">允许管理员绕过</span>
+        </label>
+        <label class="field field--full">
+          <span class="field__label">给读者看的话</span>
+          <input class="field__input" type="text" data-set="banner.maintenance" data-key="message" maxlength="200">
+        </label>
+      </div>
+      <div class="form-grid__foot">
+        <button class="btn btn--primary btn--sm" type="button" data-settings-save>保存维护模式</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">评论风控阈值</h2>
+        <span class="panel__hint">改完立刻影响新评论的打分判定（历史评论的分数不会重算）</span>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field__label">进待审的分数（默认 4）</span>
+          <input class="field__input" type="number" min="0" max="20" data-set-num="comment.hold_score">
+        </label>
+        <label class="field">
+          <span class="field__label">自动隐藏的分数（默认 7）</span>
+          <input class="field__input" type="number" min="0" max="20" data-set-num="comment.auto_hide_score">
+        </label>
+      </div>
+      <div class="form-grid__foot">
+        <button class="btn btn--primary btn--sm" type="button" data-settings-save>保存阈值</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 通知与邮件（B3 / B16） ==================== -->
+  <section class="admin-panel" data-admin-panel="notify" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">站外通知</h2>
+        <span class="panel__hint">
+          站内通知始终照常发；打开这里之后，通知会<strong>再</strong>投递一份到 Webhook（邮件 / 群机器人 / 自建服务都行）。
+          投递由云函数 ws-notify 定时执行，没部署也不影响站内通知
+        </span>
+      </div>
+      <div class="form-grid">
+        <label class="field field--switch">
+          <input type="checkbox" data-set-bool="notify.enabled">
+          <span class="field__label">启用站外投递</span>
+        </label>
+        <label class="field">
+          <span class="field__label">送达方式</span>
+          <select class="field__input field__input--select" data-set="notify.webhook_kind">
+            <option value="auto">自动识别（按 URL 判断）</option>
+            <option value="json">通用 JSON POST</option>
+            <option value="wecom">企业微信群机器人</option>
+            <option value="dingtalk">钉钉群机器人</option>
+            <option value="feishu">飞书群机器人</option>
+          </select>
+        </label>
+        <label class="field field--full">
+          <span class="field__label">Webhook 地址</span>
+          <input class="field__input mono" type="text" data-set="notify.webhook_url" maxlength="300"
+                 placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…">
+        </label>
+        <div class="field field--full">
+          <span class="field__label">投递密钥（云函数用它领取待发消息）</span>
+          <div class="inline-form inline-form--tight">
+            <input class="field__input mono" type="text" data-set="notify.worker_secret" maxlength="80"
+                   placeholder="至少 16 位随机串">
+            <button class="btn btn--ghost btn--sm" type="button" data-notify-gen-secret>随机生成</button>
+            <button class="btn btn--ghost btn--sm" type="button" data-notify-copy-secret>复制</button>
+          </div>
+          <span class="field__hint">
+            这个密钥等于投递通道的口令，别贴到公开仓库。函数侧用同一个值调用
+            <code>notify_outbox_claim</code> 领取、<code>notify_outbox_ack</code> 回执。
+          </span>
+        </div>
+        <div class="field field--full">
+          <span class="field__label">要推送哪些事件</span>
+          <div class="chip-row" data-notify-kinds>
+            <label class="admin-check"><input type="checkbox" value="comment"><span>新评论</span></label>
+            <label class="admin-check"><input type="checkbox" value="submission"><span>新投稿</span></label>
+            <label class="admin-check"><input type="checkbox" value="report"><span>评论举报</span></label>
+            <label class="admin-check"><input type="checkbox" value="email_request"><span>邮箱变更申请</span></label>
+            <label class="admin-check"><input type="checkbox" value="mention"><span>被 @ 提及</span></label>
+          </div>
+        </div>
+      </div>
+      <div class="form-grid__foot">
+        <button class="btn btn--primary btn--sm" type="button" data-settings-save>保存站外通知</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">邮件 / 消息模板</h2>
+        <span class="panel__hint">
+          用 <code>{'{'}</code>变量<code>{'}'}</code> 占位，可用：site / title / author / excerpt / link / target / post
+        </span>
+      </div>
+      <div class="admin-subtabs" role="tablist" aria-label="模板选择">
+        <button class="admin-subtab is-active" type="button" role="tab" aria-selected="true" data-tpl-tab="mail.tpl.comment">新评论</button>
+        <button class="admin-subtab" type="button" role="tab" aria-selected="false" data-tpl-tab="mail.tpl.submission">新投稿</button>
+        <button class="admin-subtab" type="button" role="tab" aria-selected="false" data-tpl-tab="mail.tpl.report">举报</button>
+        <button class="admin-subtab" type="button" role="tab" aria-selected="false" data-tpl-tab="mail.tpl.email_request">邮箱申请</button>
+        <button class="admin-subtab" type="button" role="tab" aria-selected="false" data-tpl-tab="mail.tpl.system">系统通知</button>
+      </div>
+      <div class="form-grid">
+        <label class="field field--full">
+          <span class="field__label">标题</span>
+          <input class="field__input" type="text" data-tpl-subject maxlength="200">
+        </label>
+        <label class="field field--full">
+          <span class="field__label">正文（支持换行）</span>
+          <textarea class="field__input field__textarea mono" rows="6" data-tpl-body></textarea>
+        </label>
+      </div>
+      <div class="form-grid__foot">
+        <button class="btn btn--primary btn--sm" type="button" data-tpl-save>保存这个模板</button>
+        <button class="btn btn--ghost btn--sm" type="button" data-tpl-reset>恢复默认</button>
+        <span class="write-status" data-tpl-status aria-live="polite"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">投递队列</h2>
+        <span class="panel__hint">
+          待发 <strong data-outbox-pending>0</strong> ·
+          失败 <strong data-outbox-failed>0</strong> ·
+          已送达 <strong data-outbox-sent>0</strong>
+        </span>
+        <div class="panel__head-actions">
+          <button class="btn btn--ghost btn--sm" type="button" data-outbox-retry-all>全部重试</button>
+        </div>
+      </div>
+      <div class="admin-toolbar">
+        <div class="chip-row">
+          <button class="chip is-active" type="button" data-outbox-filter="all">全部</button>
+          <button class="chip" type="button" data-outbox-filter="pending">待发</button>
+          <button class="chip" type="button" data-outbox-filter="failed">失败</button>
+          <button class="chip" type="button" data-outbox-filter="sent">已送达</button>
+        </div>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>时间</th><th>类型</th><th>标题</th><th>状态</th><th>重试</th><th>操作</th></tr></thead>
+          <tbody data-admin-outbox>
+            <tr><td colspan="6" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="admin-pager" data-outbox-pager></div>
+    </div>
+  </section>
+
+  <!-- ==================== 数据与备份（B5） ==================== -->
+  <section class="admin-panel" data-admin-panel="data" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">导出数据</h2>
+        <span class="panel__hint">生成 JSON 直接下载；单表上限 5000 行，够用来做备份和对账</span>
+      </div>
+      <div class="admin-toolbar">
+        <select class="field__input field__input--select" data-export-kind>
+          <option value="all">全部</option>
+          <option value="posts">文章</option>
+          <option value="comments">评论</option>
+          <option value="users">用户</option>
+          <option value="interactions">互动（点赞/收藏/阅读/订阅）</option>
+          <option value="admin">审计日志 + 站点设置</option>
+        </select>
+        <button class="btn btn--primary btn--sm" type="button" data-export-run>导出并下载</button>
+        <button class="btn btn--ghost btn--sm" type="button" data-export-to-cloud>导出并存为云端备份</button>
+      </div>
+      <p class="admin-hint-line">
+        导出走的是服务端只读函数，只有管理员能调用；用户导出里<strong>不含密码哈希</strong>，
+        只有资料、状态与互动计数。
+      </p>
+      <div class="admin-table-wrap" data-export-preview hidden>
+        <table class="admin-table">
+          <thead><tr><th>数据集</th><th>行数</th></tr></thead>
+          <tbody data-export-tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">备份快照</h2>
+        <span class="panel__hint">每次「导出并存为云端备份」都会在这里留一条记录，可下载或删除</span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>时间</th><th>范围</th><th>文件</th><th>大小</th><th>操作</th></tr></thead>
+          <tbody data-backup-list>
+            <tr><td colspan="5" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="admin-pager" data-backup-pager></div>
+    </div>
+  </section>
+
+  <!-- ==================== 安全与健康（B13 / B14） ==================== -->
+  <section class="admin-panel" data-admin-panel="system" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">二次验证（TOTP）</h2>
+        <span class="panel__hint">
+          开启后，改站点设置、批量删除、删备份、禁用用户等敏感操作都需要先输入 6 位动态码
+          （15 分钟内免重复输入）
+        </span>
+      </div>
+      <div class="twofa" data-twofa>
+        <div class="twofa__state">
+          <span class="twofa__dot" data-twofa-dot></span>
+          <span data-twofa-state>检查中…</span>
+        </div>
+        <div class="twofa__actions" data-twofa-actions></div>
+        <div class="twofa__setup" data-twofa-setup hidden>
+          <p>用任意验证器（Google Authenticator / 1Password / 微信小程序「验证码」等）扫码，或手工输入密钥：</p>
+          <div class="twofa__secret">
+            <code data-twofa-secret></code>
+            <button class="btn btn--ghost btn--xs" type="button" data-twofa-copy>复制密钥</button>
+          </div>
+          <div class="inline-form inline-form--tight">
+            <input class="field__input mono" type="text" inputmode="numeric" maxlength="6"
+                   placeholder="输入 6 位动态码" data-twofa-code>
+            <button class="btn btn--primary btn--sm" type="button" data-twofa-enable>确认开启</button>
+          </div>
+        </div>
+        <p class="admin-hint-line">
+          密钥只存服务端、不下发到页面，页面里只在你开启的那一次显示。
+          换手机或丢了验证器，可以让另一位管理员在「用户」里重置。
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">站点健康</h2>
+        <div class="panel__head-actions">
+          <span class="panel__hint" data-health-time></span>
+          <button class="btn btn--ghost btn--sm" type="button" data-health-refresh>重新检查</button>
+        </div>
+      </div>
+      <div class="health-grid" data-health-grid>
+        <div class="admin-empty">加载中…</div>
+      </div>
+      <div class="health-attention" data-health-attention hidden>
+        <h3 class="chart-card__title">需要留意</h3>
+        <ul class="health-list" data-health-attention-list></ul>
+      </div>
+      <div class="health-latest" data-health-latest hidden>
+        <h3 class="chart-card__title">最近记录</h3>
+        <ul class="health-list" data-health-latest-list></ul>
       </div>
     </div>
   </section>
@@ -2332,3 +3050,48 @@ def cloud_post_page(*, config: dict, root: str = "") -> str:
   </footer>
   {post_interact_block(post_slug="", post_title="", root=root, login_next="posts.html", lang=lang)}
 </div>"""
+
+
+def preview_page(*, config: dict, root: str = "") -> str:
+    """A4 草稿预览分享页：凭 token 读一份内容快照，无需登录。
+
+    刻意做成**纯客户端渲染**：token 是随机的、文章可能还没发布，
+    静态化没有意义，反而会把未公开正文写进产物目录。
+    """
+    lang = _lang(config)
+    return f"""<div class="wrap" data-preview data-preview-root="{root}">
+  <div class="preview-banner">
+    <span class="preview-banner__mark" aria-hidden="true">👀</span>
+    <div class="preview-banner__text">
+      <strong>这是一条预览链接</strong>
+      <span>内容是提交时的快照，<em>尚未公开发布</em>；对方看到的不是线上版本。请勿转发给无关的人。</span>
+    </div>
+  </div>
+
+  <div class="loading-state" data-preview-status>正在读取预览内容…</div>
+
+  <div class="preview-body" data-preview-body hidden>
+    <header class="article-head">
+      <span class="eyebrow">Preview</span>
+      <h1 class="article-head__title" data-preview-title></h1>
+      <p class="article-head__summary" data-preview-summary hidden></p>
+      <div class="article-meta">
+        <span data-preview-author></span>
+        <span data-preview-expiry></span>
+      </div>
+      <div class="tag-row" data-preview-tags></div>
+    </header>
+    <article class="prose" data-preview-content></article>
+  </div>
+
+  <div class="empty-state" data-preview-error hidden>
+    <h2>预览链接不可用</h2>
+    <p data-preview-error-text>链接可能已过期、被撤销，或地址不完整。</p>
+    <a class="btn btn--ghost btn--sm" href="{root}index.html">回到首页</a>
+  </div>
+</div>"""
+
+
+# 预览页不该被搜索引擎收录：它是「一人一条随机链接」的临时页面，
+# 收录了既没意义，也可能把作者还没定稿的内容带进索引。
+PREVIEW_NOINDEX = '<meta name="robots" content="noindex, nofollow">'

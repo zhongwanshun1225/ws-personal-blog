@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  var VERSION = 'wsblog-v3';
+  var VERSION = 'wsblog-v5';
   var SCOPE_URL = new URL(self.registration.scope);
   var ROOT = SCOPE_URL.pathname;
 
@@ -26,6 +26,8 @@
     ROOT + 'assets/i18n.js',
     ROOT + 'assets/vendor-map.js',
     ROOT + 'assets/app.js',
+    ROOT + 'assets/banner.js',
+    ROOT + 'assets/analytics.js',
     ROOT + 'assets/onboard.js',
     ROOT + 'offline.html',
   ];

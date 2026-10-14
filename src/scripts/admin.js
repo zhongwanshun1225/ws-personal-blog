@@ -45,6 +45,7 @@
   var fieldTags = q('[name="tags"]');
   var fieldContent = q('[name="content_md"]');
   var fieldStatus = q('[name="status"]');
+  var fieldSchedule = q('[data-admin-schedule]');
   var saveBtn = q('[data-post-save]');
   var publishBtn = q('[data-post-publish]');
   var resetBtn = q('[data-post-reset]');
@@ -77,6 +78,11 @@
   var reportPagerEl = q('[data-report-pager]');
   var emailRequestsBody = q('[data-admin-email-requests]');
   var emailRequestCountEl = q('[data-email-request-count]');
+
+  /* 列表优先：编辑器默认收起，点「写新文章」或行内「编辑」才展开 */
+  var editorShell = q('[data-editor-shell]');
+  var editorOpenBtn = q('[data-editor-open]');
+  var editorCloseBtn = q('[data-editor-close]');
 
   /* 分页与搜索控件 */
   var postSearchEl = q('[data-post-search]');
@@ -114,11 +120,12 @@
   var editState = { page: 1, pageSize: 20, total: 0 };
   var reportsState = { status: 'open', page: 1, pageSize: 30, total: 0 };
 
-  /* 状态徽章：draft / pending / published / rejected */
+  /* 状态徽章：draft / pending / published / scheduled / rejected */
   var STATUS_META = {
     draft: { label: '草稿', cls: 'status-badge--draft' },
     pending: { label: '待审核', cls: 'status-badge--pending' },
     published: { label: '已发布', cls: 'status-badge--published' },
+    scheduled: { label: '定时未到', cls: 'status-badge--scheduled' },
     rejected: { label: '未通过', cls: 'status-badge--rejected' },
   };
 
@@ -172,8 +179,71 @@
     if (node) node.textContent = value == null ? '' : String(value);
   }
 
-  function api(promise, fallbackMessage) {
-    return promise.then(function (res) {
+  /* ---- datetime-local ↔ ISO（A3 定时发布 / B8 排序定时）----
+     datetime-local 的 value 是「本地时间、无时区」的字面量，直接扔给
+     Postgres 会被当 UTC 解析，于是定时会整体偏 8 小时。这里统一转成 ISO。 */
+  function localInputToIso(value) {
+    var text = String(value || '').trim();
+    if (!text) return '';
+    var date = new Date(text);
+    return isNaN(date.getTime()) ? '' : date.toISOString();
+  }
+
+  function isoToLocalInput(iso) {
+    if (!iso) return '';
+    var date = new Date(iso);
+    if (isNaN(date.getTime())) return '';
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
+      'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+
+  /**
+   * 统一空态：主文案 + 副提示（原来只有一句灰字，管理员看不出「是没数据还是筛错了」）。
+   * 传入 colspan 保持表格结构，窄屏卡片化时这一格会自动跨列。
+   */
+  function emptyRow(colspan, title, hint) {
+    return (
+      '<tr><td colspan="' + colspan + '" class="admin-empty">' +
+      '<span class="admin-empty__title">' + esc(title) + '</span>' +
+      (hint ? '<span class="admin-empty__hint">' + esc(hint) + '</span>' : '') +
+      '</td></tr>'
+    );
+  }
+
+  /**
+   * 批量选择用的勾选格（B2）。真正的选择状态由 admin-ext.js 统一维护
+   * （它在本文件的刷新钩子上同步），这里只负责把格子画出来 —— 保持
+   * 「渲染」与「批量动作」两层解耦，改表格结构不会牵动批量逻辑。
+   */
+  function pickCell(kind, id) {
+    return (
+      '<td class="admin-table__pick">' +
+      '<input type="checkbox" data-pick="' + esc(kind) + '" value="' + esc(id) + '" ' +
+      'aria-label="选择该项">' +
+      '</td>'
+    );
+  }
+
+  /**
+   * 与 admin-ext.js（新增的 B2–B17 面板）之间的两个钩子。
+   * 分层目的：本文件保持「原有面板」的稳定实现，新面板单独一个文件，
+   * 两者只通过这两个函数交互，谁都不用感知对方的内部状态。
+   *   onList  —— 每次列表重渲染后同步一次（批量栏据此计算已选/可选）
+   *   refresh —— 统一刷新时把新面板也带上
+   */
+  function notifyExtList(kind, list) {
+    var ext = window.WSBlogAdminExt;
+    if (ext && typeof ext.onList === 'function') ext.onList(kind, list || []);
+  }
+
+  function extRefresh() {
+    var ext = window.WSBlogAdminExt;
+    if (ext && typeof ext.refresh === 'function') return ext.refresh(postsState.status);
+    return Promise.resolve();
+  }
+
+  function api(promise, fallbackMessage) {    return promise.then(function (res) {
       if (res && res.error) throw res.error;
       return res && res.data;
     }).catch(function (err) {
@@ -403,70 +473,206 @@
     account_delete: '用户注销账号'
   };
 
-  /* 审计日志原来写死 100 条（V3）：管理员看不到更早的记录，也没有任何提示。
-     这里改成可扩展，并把「还有更多」明确给出来。 */
-  var auditLimit = 100;
+  /* 审计日志（B12）：筛选 + 服务端分页 + 导出。
+     旧实现是「写死 100 条 + 加载更多」，既搜不了也导不出去。 */
+  var auditState = { search: '', action: '', actor: '', from: '', to: '', page: 1, pageSize: 50, total: 0 };
+
+  function auditDetail(item) {
+    var detail = '';
+    if (item.note) detail += esc(item.note);
+    if (item.payload) {
+      try {
+        var p = typeof item.payload === 'string' ? JSON.parse(item.payload) : item.payload;
+        if (p && typeof p === 'object') {
+          var kv = Object.keys(p).map(function (k) {
+            var v = p[k];
+            if (Array.isArray(v)) v = v.length + ' 项';
+            return k + '=' + String(v == null ? '—' : v).slice(0, 60);
+          }).join(' · ');
+          if (kv) detail += (detail ? ' · ' : '') + esc(kv);
+        }
+      } catch (err) { /* payload 不是合法 JSON 时忽略 */ }
+    }
+    return detail || '—';
+  }
+
+  function auditParams() {
+    return {
+      p_search: auditState.search || null,
+      p_action: auditState.action || null,
+      p_actor: auditState.actor || null,
+      p_from: auditState.from || null,
+      p_to: auditState.to || null,
+    };
+  }
+
+  function loadAuditActions() {
+    var sel = q('[data-audit-action]');
+    if (!sel || sel.getAttribute('data-loaded')) return Promise.resolve();
+    return api(C.db().rpc('admin_audit_actions'), '动作清单加载失败').then(function (list) {
+      var actions = Array.isArray(list) ? list : [];
+      sel.innerHTML = '<option value="">全部动作</option>' + actions.map(function (action) {
+        return '<option value="' + esc(action) + '">' + esc(AUDIT_LABELS[action] || action) + '</option>';
+      }).join('');
+      sel.setAttribute('data-loaded', '1');
+    }).catch(function () {});
+  }
 
   function loadAudit() {
     var body = q('[data-audit-log]');
     if (!body) return Promise.resolve(null);
-    return C.db()
-      .from('admin_audit_log')
-      .select('id, actor_email, action, target_type, target_id, note, payload, created_at')
-      .order('created_at', { ascending: false })
-      .limit(auditLimit)
-      .then(function (res) {
-        if (res && res.error) throw res.error;
-        var rows = (res && res.data) || [];
-        var tail =
-          rows.length >= auditLimit
-            ? '<tr><td colspan="5" class="admin-empty">' +
-              '<button class="link-btn" type="button" data-audit-more>加载更多</button>' +
-              '<span class="admin-cell__sub"> 已显示最近 ' + rows.length + ' 条</span></td></tr>'
-            : '';
+    loadAuditActions();
+    var params = auditParams();
+    params.p_limit = auditState.pageSize;
+    params.p_offset = (auditState.page - 1) * auditState.pageSize;
+    return api(C.db().rpc('admin_audit_page', params), '日志加载失败')
+      .then(function (data) {
+        var page = pageRows(data, '日志加载失败');
+        var rows = page.rows || [];
+        var total = Number(page.total) || 0;
+        var totalPages = Math.max(1, Math.ceil(total / auditState.pageSize));
+        if (auditState.page > totalPages) {
+          auditState.page = totalPages;
+          return loadAudit();
+        }
+        auditState.total = total;
+        setText(q('[data-audit-total]'), total);
+        var filtered = auditState.search || auditState.action || auditState.actor || auditState.from || auditState.to;
         body.innerHTML = rows.length
           ? rows.map(function (item) {
-              var detail = '';
-              if (item.note) detail += esc(item.note);
-              if (item.payload) {
-                try {
-                  var p = typeof item.payload === 'string' ? JSON.parse(item.payload) : item.payload;
-                  var kv = Object.keys(p).map(function (k) {
-                    return k + '=' + String(p[k] == null ? '—' : p[k]).slice(0, 60);
-                  }).join(' · ');
-                  if (kv) detail += (detail ? ' · ' : '') + esc(kv);
-                } catch (err) { /* payload 不是合法 JSON 时忽略 */ }
-              }
               return (
                 '<tr>' +
-                '<td class="admin-cell__sub mono">' + esc(C.formatDate(item.created_at)) + '</td>' +
-                '<td class="admin-cell__sub">' + esc(item.actor_email || item.target_id || '—') + '</td>' +
+                '<td class="admin-cell__sub mono">' + esc(C.formatDateTime(item.created_at)) + '</td>' +
+                '<td class="admin-cell__sub">' + esc(item.actor_email || item.actor_id || '—') + '</td>' +
                 '<td>' + esc(AUDIT_LABELS[item.action] || item.action) + '</td>' +
                 '<td class="mono admin-cell__sub">' + esc([item.target_type, item.target_id].filter(Boolean).join(':') || '—') + '</td>' +
-                '<td class="admin-cell__sub">' + (detail || '—') + '</td>' +
+                '<td class="admin-cell__sub">' + auditDetail(item) + '</td>' +
                 '</tr>'
               );
-            }).join('') + tail
-          : '<tr><td colspan="5" class="admin-empty">还没有任何管理操作记录。</td></tr>';
-        /* 事件委托绑一次即可（每次重渲染 innerHTML 都会丢掉子节点上的监听） */
-        if (!body.getAttribute('data-audit-bound')) {
-          body.setAttribute('data-audit-bound', '1');
-          body.addEventListener('click', function (e) {
-            var btn = e.target.closest ? e.target.closest('[data-audit-more]') : null;
-            if (!btn) return;
-            e.preventDefault();
-            btn.disabled = true;
-            auditLimit += 100;
-            loadAudit();
-          });
-        }
+            }).join('')
+          : emptyRow(5, filtered ? '没有匹配的操作记录' : '还没有任何管理操作记录',
+                     filtered ? '放宽筛选条件再试。' : '删帖、审核、封禁等敏感操作都会自动留痕。');
+        var pager = q('[data-audit-pager]');
+        auditState.total = total;
+        renderPager(pager, auditState, loadAudit);
         return rows;
       })
       .catch(function (err) {
-        body.innerHTML = '<tr><td colspan="5" class="admin-empty">日志加载失败：' + esc((err && err.message) || '未知错误') + '</td></tr>';
+        var message = (err && err.message) || '';
+        /* 编辑角色没有审计查看权限：给一句人话，别甩数据库报错 */
+        body.innerHTML = emptyRow(
+          5,
+          /forbidden/i.test(message) ? '当前身份没有查看权限' : '日志加载失败',
+          /forbidden/i.test(message) ? '审计日志只对管理员开放。' : message
+        );
         return null;
       });
   }
+
+  /* 导出当前筛选结果（最多 200 条，服务端 RPC 的硬上限）。
+     不在前端拼全量是因为审计表会一直长，一次性拉全对浏览器与服务端都太重。 */
+  function exportAuditCsv(btn) {
+    var params = auditParams();
+    params.p_limit = 200;
+    params.p_offset = 0;
+    if (btn) btn.disabled = true;
+    return api(C.db().rpc('admin_audit_page', params), '导出失败')
+      .then(function (data) {
+        var rows = (data && data.rows) || [];
+        if (!rows.length) {
+          toast('当前筛选没有可导出的记录');
+          return;
+        }
+        var head = ['时间', '操作者', '动作', '对象类型', '对象 ID', '备注', '详情'];
+        var lines = [head.join(',')];
+        rows.forEach(function (item) {
+          var payload = '';
+          try {
+            payload = item.payload ? JSON.stringify(item.payload) : '';
+          } catch (err) { payload = ''; }
+          lines.push([
+            item.created_at || '',
+            item.actor_email || item.actor_id || '',
+            AUDIT_LABELS[item.action] || item.action || '',
+            item.target_type || '',
+            item.target_id || '',
+            item.note || '',
+            payload,
+          ].map(csvCell).join(','));
+        });
+        /* BOM 让 Excel 正确识别 UTF-8，否则中文全是乱码 */
+        downloadText('audit-log.csv', '\ufeff' + lines.join('\r\n'));
+        toast('已导出 ' + rows.length + ' 条');
+      })
+      .catch(function () {})
+      .then(function () { if (btn) btn.disabled = false; });
+  }
+
+  function csvCell(value) {
+    var text = String(value == null ? '' : value);
+    return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  }
+
+  function downloadText(filename, text) {
+    var blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  bindSearch(q('[data-audit-search]'), auditState, function () { auditState.page = 1; loadAudit(); });
+  bindSearch(q('[data-audit-actor]'), auditState, function () { auditState.page = 1; loadAudit(); });
+  (function () {
+    var actionSel = q('[data-audit-action]');
+    if (actionSel) {
+      actionSel.addEventListener('change', function () {
+        auditState.action = actionSel.value || '';
+        auditState.page = 1;
+        loadAudit();
+      });
+    }
+    var fromEl = q('[data-audit-from]');
+    var toEl = q('[data-audit-to]');
+    if (fromEl) {
+      fromEl.addEventListener('change', function () {
+        auditState.from = fromEl.value || '';
+        auditState.page = 1;
+        loadAudit();
+      });
+    }
+    if (toEl) {
+      toEl.addEventListener('change', function () {
+        auditState.to = toEl.value || '';
+        auditState.page = 1;
+        loadAudit();
+      });
+    }
+    var resetBtn = q('[data-audit-reset]');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function () {
+        auditState.search = '';
+        auditState.action = '';
+        auditState.actor = '';
+        auditState.from = '';
+        auditState.to = '';
+        auditState.page = 1;
+        [q('[data-audit-search]'), q('[data-audit-actor]'), q('[data-audit-from]'), q('[data-audit-to]')]
+          .forEach(function (el) { if (el) el.value = ''; });
+        var sel = q('[data-audit-action]');
+        if (sel) sel.value = '';
+        loadAudit();
+      });
+    }
+    var exportBtn = q('[data-audit-export]');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', function () { exportAuditCsv(exportBtn); });
+    }
+  })();
 
   /* ---------------- 文章 slug 清单同步（供浏览量白名单使用） ---------------- */
 
@@ -540,23 +746,42 @@
     editingSlug = '';
     if (form) form.reset();
     if (fieldStatus) fieldStatus.value = 'draft';
+    if (fieldSchedule) fieldSchedule.value = '';
     if (formTitle) formTitle.textContent = '写一篇新文章';
     if (previewBox) {
       previewBox.innerHTML = '';
       previewBox.setAttribute('hidden', '');
     }
     if (saveBtn) saveBtn.textContent = '保存草稿';
+    broadcastEditor('', 'draft');
+  }
+
+  /** 广播当前编辑器状态：write-ext.js 靠这个事件跟着换 slug（A4/A5）。 */
+  function broadcastEditor(slug, status) {
+    document.dispatchEvent(new CustomEvent('wsblog:editor', {
+      detail: {
+        slug: slug || '',
+        status: status || '',
+        scope: 'admin',
+        publish_at: localInputToIso(fieldSchedule && fieldSchedule.value),
+      },
+    }));
   }
 
   function readForm(status) {
-    return {
+    var next = status || (fieldStatus && fieldStatus.value) || 'draft';
+    var payload = {
       title: (fieldTitle && fieldTitle.value || '').trim(),
       slug: slugify((fieldSlug && fieldSlug.value) || (fieldTitle && fieldTitle.value) || ''),
       summary: (fieldSummary && fieldSummary.value || '').trim(),
       tags: tagsToArray(fieldTags && fieldTags.value),
       content_md: (fieldContent && fieldContent.value) || '',
-      status: status || (fieldStatus && fieldStatus.value) || 'draft',
+      status: next,
     };
+    if (next === 'scheduled' || (fieldSchedule && fieldSchedule.value)) {
+      payload.publish_at = localInputToIso(fieldSchedule && fieldSchedule.value) || null;
+    }
+    return payload;
   }
 
   function validate(payload) {
@@ -569,6 +794,19 @@
       toast('正文不能为空');
       if (fieldContent) fieldContent.focus();
       return false;
+    }
+    if (payload.status === 'scheduled') {
+      var at = localInputToIso(fieldSchedule && fieldSchedule.value);
+      if (!at) {
+        toast('定时发布要填发布时间');
+        if (fieldSchedule) fieldSchedule.focus();
+        return false;
+      }
+      if (new Date(at).getTime() <= Date.now()) {
+        toast('发布时间要在未来；想立刻上线就选「已发布」');
+        if (fieldSchedule) fieldSchedule.focus();
+        return false;
+      }
     }
     return true;
   }
@@ -583,6 +821,14 @@
 
     payload.updated_at = new Date().toISOString();
     if (payload.status === 'published') payload.published_at = new Date().toISOString();
+    if (payload.status === 'scheduled') payload.published_at = null;
+
+    var DONE_LABEL = {
+      published: '已发布',
+      scheduled: '已排期，到点自动上线',
+      draft: '草稿已保存',
+    };
+    var doneText = DONE_LABEL[payload.status] || '已保存';
 
     var request;
     if (editingSlug) {
@@ -595,11 +841,11 @@
     api(request, '保存失败')
       .then(function (rows) {
         if (!rows || !rows.length) throw new Error('保存失败：返回为空（可能没有管理员权限）');
-        toast(payload.status === 'published' ? '已发布' : '草稿已保存');
+        toast(doneText);
         /* 已落到云端，清掉本机草稿（含新建时用的 new 槽位） */
         clearAdminDraft();
         hideAdminDraftBanner();
-        setAdminStatus(payload.status === 'published' ? '已发布到云端' : '已保存到云端', 'saved');
+        setAdminStatus(doneText + '，已同步到云端', 'saved');
         resetForm();
         return Promise.all([loadPosts(), loadStats(), loadReview()]);
       })
@@ -629,6 +875,43 @@
       clearAdminDraft();
       hideAdminDraftBanner();
       resetForm();
+    });
+  }
+
+  /* 编辑器按需展开：列表是主角，编辑器只在「写新文章 / 编辑某篇」时出现。
+     原来的实现把编辑器常驻在列表上方，文章一多要滚很久才看得到列表。 */
+  function openEditor() {
+    if (!editorShell) return;
+    editorShell.removeAttribute('hidden');
+    broadcastEditor(editingSlug, fieldStatus && fieldStatus.value);
+  }
+
+  function closeEditor() {
+    if (editorShell) editorShell.setAttribute('hidden', '');
+  }
+
+  if (editorOpenBtn) {
+    editorOpenBtn.addEventListener('click', function () {
+      resetForm();
+      openEditor();
+      if (fieldTitle) fieldTitle.focus();
+    });
+  }
+  if (editorCloseBtn) {
+    editorCloseBtn.addEventListener('click', function () {
+      closeEditor();
+    });
+  }
+  if (fieldSchedule) {
+    fieldSchedule.addEventListener('change', function () {
+      broadcastEditor(editingSlug, fieldStatus && fieldStatus.value);
+    });
+  }
+  if (fieldStatus) {
+    fieldStatus.addEventListener('change', function () {
+      /* 选到「定时发布」时把焦点带到时间输入，省一次找控件的动作 */
+      if (fieldStatus.value === 'scheduled' && fieldSchedule) fieldSchedule.focus();
+      broadcastEditor(editingSlug, fieldStatus.value);
     });
   }
 
@@ -697,28 +980,52 @@
   }
 
   function authorCell(post) {
-    var name = post.author_name || post.author_email || '未知作者';
+    /* admin_posts_page 返回的是 nickname / email（不是 author_name / author_email），
+       两种键名都认，避免作者列永远显示「未知作者」。 */
+    var mail = post.email || post.author_email || '';
+    var name = post.nickname || post.author_name || mail.split('@')[0] || '未知作者';
     return (
       '<td><div class="admin-cell__title">' + esc(name) +
       (post.is_own ? ' <span class="admin-tag">我</span>' : '') + '</div>' +
-      '<div class="admin-cell__sub mono">' + esc(post.author_email || post.author_id || '') + '</div></td>'
+      '<div class="admin-cell__sub mono">' + esc(mail || post.author_id || '') + '</div></td>'
     );
+  }
+
+  /** 排序权重 / 定时发布（B8）：一格里同时给出「置顶、权重、定时」三件信息 */
+  function flagsCell(post) {
+    var bits = [];
+    if (post.pinned) bits.push('<span class="status-badge status-badge--pinned">置顶</span>');
+    if (Number(post.weight || 0) !== 0) {
+      bits.push('<span class="admin-cell__sub">权重 ' + esc(String(post.weight)) + '</span>');
+    }
+    if (post.status === 'scheduled' && post.publish_at) {
+      bits.push('<div class="admin-cell__sub">定时 ' + esc(C.formatDateTime(post.publish_at)) + '</div>');
+    } else if (post.publish_at) {
+      bits.push('<div class="admin-cell__sub">发布时间 ' + esc(C.formatDateTime(post.publish_at)) + '</div>');
+    }
+    if (!bits.length) bits.push('<span class="admin-cell__sub">—</span>');
+    return '<td>' + bits.join(' ') + '</td>';
   }
 
   function postRow(post) {
     var isPublished = post.status === 'published';
+    var isScheduled = post.status === 'scheduled';
     return (
       '<tr data-post-row="' + esc(post.slug) + '">' +
+      pickCell('posts', post.id) +
       '<td><div class="admin-cell__title">' + esc(post.title) + '</div>' +
-      '<div class="admin-cell__sub mono">' + esc(post.slug) + '</div></td>' +
+      '<div class="admin-cell__sub mono">' + esc(post.slug) + '</div>' +
+      (post.edit_submitted_at ? '<div class="admin-cell__flag">有改稿待审</div>' : '') + '</td>' +
       authorCell(post) +
       '<td>' + statusBadge(post.status) + '</td>' +
+      flagsCell(post) +
       '<td class="admin-cell__sub">' + esc(C.formatDate(post.updated_at || post.created_at)) + '</td>' +
       '<td class="admin-cell__actions">' +
       '<button class="btn btn--ghost btn--sm" type="button" data-post-edit="' + esc(post.slug) + '">编辑</button>' +
-      (isPublished
+      (isPublished || isScheduled
         ? '<button class="btn btn--ghost btn--sm" type="button" data-post-unpublish="' + esc(post.slug) + '">转草稿</button>'
         : '<button class="btn btn--ghost btn--sm" type="button" data-post-publish-row="' + esc(post.slug) + '">发布</button>') +
+      '<button class="btn btn--ghost btn--sm" type="button" data-post-flags="' + esc(post.slug) + '">排序</button>' +
       '<button class="btn btn--danger btn--sm" type="button" data-post-delete="' + esc(post.slug) + '">删除</button>' +
       '</td></tr>'
     );
@@ -729,7 +1036,7 @@
     editingSlug = slug;
     return api(
       C.db().from('cloud_posts')
-        .select('title, slug, summary, tags, content_md, status, review_note')
+        .select('title, slug, summary, tags, content_md, status, review_note, publish_at')
         .eq('slug', slug).maybeSingle(),
       '读取文章失败'
     ).then(function (row) {
@@ -740,6 +1047,7 @@
       if (fieldTags) fieldTags.value = tagsToText(row.tags);
       if (fieldContent) fieldContent.value = row.content_md || '';
       if (fieldStatus) fieldStatus.value = row.status || 'draft';
+      if (fieldSchedule) fieldSchedule.value = isoToLocalInput(row.publish_at);
       if (formTitle) formTitle.textContent = '编辑：' + (row.title || '');
       if (saveBtn) saveBtn.textContent = '保存修改';
       if (previewBox) {
@@ -749,6 +1057,8 @@
       if (fieldContent) fieldContent.focus();
       /* 载入后检查是否有比云端更新的本机草稿 */
       checkAdminDraft();
+      /* 通知 write-ext.js 换 slug（预览链接 / 修订历史跟着切） */
+      broadcastEditor(row.slug, row.status);
       return row;
     });
   }
@@ -778,11 +1088,11 @@
         var filtered = postsState.search || postsState.status !== 'all';
         postsBody.innerHTML = list.length
           ? list.map(postRow).join('')
-          : '<tr><td colspan="5" class="admin-empty">' +
-            (filtered ? '没有匹配的文章，换个关键词或状态试试。' : '还没有文章，用左边的编辑器写下第一篇。') +
-            '</td></tr>';
+          : emptyRow(7, filtered ? '没有匹配的文章' : '还没有文章',
+                     filtered ? '换个关键词或状态试试。' : '点右上角「写新文章」写下第一篇。');
       }
       bindPostActions(list);
+      notifyExtList('posts', list);
       renderPager(postPagerEl, postsState, loadPosts);
       return list;
     });
@@ -799,9 +1109,10 @@
         var slug = btn.getAttribute('data-post-edit');
         if (!bySlug[slug]) return;
         showPanel('posts');
+        openEditor();
         loadIntoEditor(slug)
           .then(function () {
-            root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (editorShell) editorShell.scrollIntoView({ behavior: 'smooth', block: 'start' });
           })
           .catch(function () { /* api() 已提示 */ });
       });
@@ -1114,6 +1425,7 @@
       btn.addEventListener('click', function () {
         var slug = btn.getAttribute('data-review-open');
         showPanel('posts');
+        openEditor();
         loadIntoEditor(slug)
           .then(function (row) {
             if (!previewBox || !fieldContent) return;
@@ -1121,7 +1433,7 @@
             previewBox.innerHTML = window.WSBlogCloudMarkdown
               ? window.WSBlogCloudMarkdown.render(fieldContent.value)
               : '<p>' + esc(fieldContent.value).replace(/\n/g, '<br>') + '</p>';
-            root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (editorShell) editorShell.scrollIntoView({ behavior: 'smooth', block: 'start' });
             toast('已载入编辑器，可在此查看全文或直接修改');
             return row;
           })
@@ -1203,6 +1515,37 @@
 
   /* ---------------- 评论管理 ---------------- */
 
+  /* 反垃圾打点（B17）：只展示评分与命中项，不替管理员下判断 */
+  var SPAM_FLAG_LABEL = {
+    banned_word: '敏感词',
+    link: '含链接',
+    repeat: '重复刷屏',
+    burst: '短时高频',
+    same_ip: '同 IP 多次',
+    no_ua: '无 UA',
+    manual: '人工标垃圾',
+    short: '过短',
+    cyrillic: '西里尔字母',
+    keyword: '关键词',
+  };
+
+  function riskCell(item) {
+    var score = Number(item.spam_score || 0);
+    if (!score) return '<td class="admin-cell__sub">—</td>';
+    var flags = Array.isArray(item.spam_flags) ? item.spam_flags : [];
+    var labels = flags.map(function (flag) {
+      return SPAM_FLAG_LABEL[flag] || flag;
+    });
+    var cls = score >= 7 ? 'status-badge--rejected' : 'status-badge--pending';
+    return (
+      '<td>' +
+      '<span class="status-badge ' + cls + '">风险 ' + esc(String(score)) + '</span>' +
+      (labels.length ? '<div class="admin-cell__sub">' + esc(labels.join(' · ')) + '</div>' : '') +
+      (item.ua_family ? '<div class="admin-cell__sub mono">' + esc(item.ua_family) + '</div>' : '') +
+      '</td>'
+    );
+  }
+
   function commentRow(item) {
     var status = item.status || 'visible';
     var pending = status === 'pending';
@@ -1223,10 +1566,12 @@
       : '';
     return (
       '<tr data-comment-row="' + esc(item.id) + '">' +
+      pickCell('comments', item.id) +
       '<td><div class="admin-cell__title">' + esc(item.author_name || '匿名读者') + '</div>' +
       parentReply +
       '<div class="admin-cell__sub mono">' + esc(item.post_slug) + '</div></td>' +
       '<td class="admin-cell__text">' + esc(item.content) + flag + '</td>' +
+      riskCell(item) +
       '<td class="admin-cell__sub">' + esc(C.formatDateTime(item.created_at)) + '</td>' +
       '<td>' + commentStatusBadge(status) + '</td>' +
       '<td class="admin-cell__actions">' +
@@ -1234,6 +1579,10 @@
         ? '<button class="btn btn--primary btn--sm" type="button" data-comment-toggle="' + esc(item.id) + '" data-next="visible">通过</button>'
         : '<button class="btn btn--ghost btn--sm" type="button" data-comment-toggle="' + esc(item.id) + '" data-next="' +
           (visible ? 'hidden' : 'visible') + '">' + (visible ? '隐藏' : '恢复') + '</button>') +
+      (Number(item.spam_score || 0) > 0
+        ? '<button class="btn btn--ghost btn--sm" type="button" data-comment-ham="' + esc(item.id) +
+          '" title="判为正常：清除风险分并恢复显示">非垃圾</button>'
+        : '') +
       '<button class="btn btn--danger btn--sm" type="button" data-comment-remove="' + esc(item.id) + '">删除</button>' +
       '</td></tr>'
     );
@@ -1245,9 +1594,10 @@
     var filtered = commentsState.search || commentsState.status !== 'all';
     commentsBody.innerHTML = list.length
       ? list.map(commentRow).join('')
-      : '<tr><td colspan="5" class="admin-empty">' +
-        (filtered ? '这个筛选下没有评论。' : '还没有评论。') + '</td></tr>';
+      : emptyRow(7, filtered ? '这个筛选下没有评论' : '还没有评论',
+                 filtered ? '换个关键词或状态试试。' : '读者发评论后会出现在这里等你过审。');
     bindCommentActions();
+    notifyExtList('comments', list);
   }
 
   function bindCommentActions() {
@@ -1276,6 +1626,25 @@
             return Promise.all([loadComments(), loadStats()]);
           })
           .catch(function () {});
+      });
+    });
+
+    /* 判为正常（B17）：清掉风险分并恢复显示。走 admin_bulk 的 ham 分支，
+       这样「清分」的动作只在一处实现，人工与批量不会有分歧。 */
+    qa('[data-comment-ham]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        api(C.db().rpc('admin_bulk', {
+          p_kind: 'comments',
+          p_action: 'ham',
+          p_ids: [String(btn.getAttribute('data-comment-ham'))],
+        }), '操作失败').then(function (data) {
+          if (!data || data.ok !== true) throw new Error('操作未生效');
+          toast('已标记为非垃圾并恢复显示');
+          return Promise.all([loadComments(), loadStats()]);
+        }).catch(function () {}).then(function () {
+          btn.disabled = false;
+        });
       });
     });
   }
@@ -1444,7 +1813,25 @@
         : '<span class="status-badge status-badge--published">正常</span>';
     var roleBadge = user.is_admin
       ? '<span class="status-badge status-badge--admin">管理员</span>'
-      : '<span class="status-badge">普通用户</span>';
+      : user.is_editor
+        ? '<span class="status-badge status-badge--editor">编辑</span>'
+        : '<span class="status-badge">普通用户</span>';
+
+    /* 两步验证（B13）：管理员可以帮忘记验证器的同事关掉，避免「人锁在外面」 */
+    var totpCell = user.totp_enabled
+      ? '<span class="status-badge status-badge--published">已开启</span>' +
+        (user.is_admin && !user.is_self
+          ? '<button class="btn btn--ghost btn--xs" type="button" data-user-totp-off="' + esc(uid) + '">重置</button>'
+          : '')
+      : '<span class="admin-cell__sub">未开启</span>';
+
+    /* 编辑角色开关（B11）：能审稿、能管评论，但看不到用户与导出 */
+    var editorBtn = user.is_admin || user.is_self
+      ? ''
+      : '<button class="btn btn--ghost btn--xs" type="button" data-user-editor="' + esc(uid) +
+        '" data-next="' + (user.is_editor ? 'false' : 'true') + '" ' +
+        'title="编辑可审核稿件与管理评论，但看不到用户管理、导出与备份">' +
+        (user.is_editor ? '取消编辑' : '设为编辑') + '</button>';
 
     /* 邮箱状态：是否已验证 + 是否有待站长处理的变更申请（M5 / M9） */
     var emailCell =
@@ -1488,6 +1875,7 @@
 
     return (
       '<tr data-user-row="' + esc(uid) + '">' +
+      pickCell('users', uid) +
       '<td><div class="admin-cell__user">' + avatar +
       '<div><div class="admin-cell__title">' + esc(name) +
       (user.is_self ? ' <span class="admin-tag">我</span>' : '') + '</div>' +
@@ -1495,8 +1883,10 @@
       '<td class="admin-cell__sub mono">' + esc(email || '—') + '</td>' +
       '<td>' + emailCell + '</td>' +
       '<td>' + statusBadge + '</td>' +
-      '<td>' + roleBadge + '</td>' +
+      '<td>' + roleBadge + editorBtn + '</td>' +
       '<td>' + publishCell + '</td>' +
+      '<td>' + totpCell + '</td>' +
+      '<td class="admin-cell__sub">' + esc(String(user.post_count || 0)) + ' 篇</td>' +
       '<td class="admin-cell__sub">' + esc(String(user.comment_count || 0)) + ' 评论 · ' +
       esc(String(user.like_count || 0)) + ' 点赞</td>' +
       '<td class="admin-cell__sub">' + esc(C.formatDate(user.created_at)) + '</td>' +
@@ -1529,9 +1919,10 @@
       var filtered = usersState.search || usersState.status !== 'all';
       usersBody.innerHTML = list.length
         ? list.map(userRow).join('')
-        : '<tr><td colspan="9" class="admin-empty">' +
-          (filtered ? '没有匹配的账号。' : '还没有用户注册。') + '</td></tr>';
+        : emptyRow(12, filtered ? '没有匹配的账号' : '还没有用户注册',
+                   filtered ? '换个关键词或角色试试。' : '第一位注册的读者会出现在这里。');
       bindUserActions(list);
+      notifyExtList('users', list);
       renderPager(userPagerEl, usersState, loadUsers);
       return list;
     });
@@ -1584,6 +1975,46 @@
           .then(function () {
             btn.disabled = false;
           });
+      });
+    });
+
+    qa('[data-user-editor]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var uid = btn.getAttribute('data-user-editor');
+        var next = btn.getAttribute('data-next') === 'true';
+        if (!window.confirm(
+          next
+            ? '把该账号设为「编辑」？\n\n编辑可以审核稿件、管理评论与举报，但看不到用户管理、数据导出与备份。'
+            : '取消该账号的编辑角色？'
+        )) return;
+        btn.disabled = true;
+        api(C.db().rpc('admin_set_flags', { p_owner: uid, p_can_publish: null, p_is_editor: next }), '设置失败')
+          .then(function (data) {
+            var res = data && typeof data === 'object' ? data : {};
+            if (res.ok === false) throw new Error('操作未生效：' + (res.error || '未知错误'));
+            toast(next ? '已设为编辑' : '已取消编辑角色');
+            return loadUsers();
+          })
+          .catch(function () {})
+          .then(function () { btn.disabled = false; });
+      });
+    });
+
+    /* 救援：帮忙关掉无法自拔的 2FA（B13）。只在管理员看别人时出现 */
+    qa('[data-user-totp-off]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var uid = btn.getAttribute('data-user-totp-off');
+        if (!window.confirm('关闭该账号的两步验证？\n\n用于对方丢失验证器又没法登录的场景；关闭后请提醒对方重新绑定。')) return;
+        btn.disabled = true;
+        api(C.db().rpc('admin_disable_totp', { p_owner: uid }), '重置失败')
+          .then(function (data) {
+            var res = data && typeof data === 'object' ? data : {};
+            if (res.ok === false) throw new Error('重置失败：' + (res.error || '未知错误'));
+            toast('已关闭该账号的两步验证');
+            return loadUsers();
+          })
+          .catch(function () {})
+          .then(function () { btn.disabled = false; });
       });
     });
 
@@ -1744,6 +2175,7 @@
         : '<span class="admin-cell__sub">' + esc(item.handle_note || '—') + '</span>';
     return (
       '<tr data-report-row="' + item.id + '">' +
+      pickCell('reports', item.id) +
       '<td class="admin-cell__sub">' + esc(item.reporter_name || '读者') + '</td>' +
       '<td><div class="admin-cell__title">' + esc(item.comment_author || '—') + '</div>' +
       '<div class="admin-cell__sub">' + esc(commentSnippet(item.comment_content)) + '</div>' +
@@ -1781,10 +2213,10 @@
       setText(q('[data-stat-open-reports]'), page.open || 0);
       reportsBody.innerHTML = list.length
         ? list.map(reportRow).join('')
-        : '<tr><td colspan="6" class="admin-empty">' +
-          (reportsState.status === 'open' ? '没有待处理的举报。' : '没有符合条件的举报。') +
-          '</td></tr>';
+        : emptyRow(7, reportsState.status === 'open' ? '没有待处理的举报' : '没有符合条件的举报',
+                   reportsState.status === 'open' ? '读者举报后会出现在这里。' : '换个状态筛选试试。');
       bindReportActions();
+      notifyExtList('reports', list);
       renderPager(reportPagerEl, reportsState, loadReports);
       return list;
     });
@@ -1931,6 +2363,7 @@
       loadEmails(),
       loadReports(),
       loadEmailRequests(),
+      extRefresh(),
     ]);
   }
 

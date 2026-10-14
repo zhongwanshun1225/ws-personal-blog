@@ -24,6 +24,8 @@
   var sessionListeners = [];
   var currentSession = null;
   var adminFlag = null; /* null = 未知，true/false = 已判定 */
+  /* 后台角色（B11）：'admin' | 'editor' | 'user'。决定能不能进后台、看到哪些面板 */
+  var staffRole = null;
   var accountInfo = null; /* my_account() 返回：uid / email / is_admin / is_active / status */
   var identity = 'user'; /* 当前使用的身份：'user' | 'admin' */
   var booted = false; /* 会话恢复完成前不渲染顶栏，避免「登录/注册」闪一下又变成用户菜单 */
@@ -260,23 +262,49 @@
     }
   }
 
+  /**
+   * 后台身份（B11）：除了「管理员」，还多了一档「编辑」。
+   *
+   * 判定放在服务端的 my_admin_role() 里，前端只做入口放行与界面显隐 ——
+   * 真正能干什么仍然由每个 RPC 自己的 is_admin() / is_staff() 决定，
+   * 前端拿到的角色只是「别让他点进去才发现没权限」。
+   */
+  function loadStaffRole() {
+    return Promise.resolve()
+      .then(function () {
+        return cloud().database.rpc('my_admin_role');
+      })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        staffRole = typeof res.data === 'string' ? res.data : 'user';
+        return staffRole;
+      })
+      .catch(function (err) {
+        console.warn('[WSBlogCloud] 后台角色判定失败', err && err.message);
+        staffRole = 'user';
+        return staffRole;
+      });
+  }
+
   /** 刷新会话 + 管理员标记，并通知订阅者。 */
   function refresh() {
     return getSession()
       .then(function (session) {
         if (!session) {
           adminFlag = false;
+          staffRole = 'user';
           accountInfo = null;
           notify();
           return null;
         }
-        return Promise.all([isAdmin(), loadAccount()]).then(function () {
+        return Promise.all([isAdmin(), loadStaffRole(), loadAccount()]).then(function () {
           notify();
           return session;
         });
       })
       .catch(function () {
         adminFlag = false;
+        staffRole = 'user';
         accountInfo = null;
         notify();
         return null;
@@ -319,6 +347,7 @@
       .then(function () {
         currentSession = null;
         adminFlag = false;
+        staffRole = 'user';
         notify();
       });
   }
@@ -468,20 +497,20 @@
       location.href = ROOT + 'login.html?next=' + encodeURIComponent(location.pathname + location.search);
       return false;
     }
-    if (!isAdminMode()) {
-      if (adminFlag === true) {
+    /* 编辑（editor）也能进后台，只是面板少几块（用户管理 / 导出备份 / 审计） */
+    if (staffRole === 'admin' || staffRole === 'editor') {
+      if (adminFlag === true && !isAdminMode()) {
         /* 打开后台本身就是明确意图，没必要再让白名单账号点一次「切换身份」 */
         storeIdentity('admin');
         notify();
-        return true;
       }
-      toast('这个账号没有管理员权限');
-      setTimeout(function () {
-        location.href = ROOT + 'index.html';
-      }, 900);
-      return false;
+      return true;
     }
-    return true;
+    toast('这个账号没有后台权限');
+    setTimeout(function () {
+      location.href = ROOT + 'index.html';
+    }, 900);
+    return false;
   }
 
   /* ---------------- 顶栏登录态 ---------------- */
@@ -610,6 +639,9 @@
     },
     setIdentity: setIdentity,
     guardAdmin: guardAdmin,
+    /* 后台角色（B11）：'admin' | 'editor' | 'user'，未判定时返回 'user' */
+    myRole: function () { return staffRole || 'user'; },
+    isStaff: function () { return staffRole === 'admin' || staffRole === 'editor'; },
     currentUser: currentUser,
     currentUid: currentUid,
     displayName: displayName,

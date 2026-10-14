@@ -503,6 +503,49 @@ def layout(
     body_attr = f' class="{esc(body_class)}"' if body_class else ""
     progress_html = '<div class="read-progress" id="readProgress"></div>' if show_progress else ""
     brand_initial = esc(str(site_title).strip()[:1].upper())
+
+    # ---------- 公告条 / 维护模式（B15）----------
+    # 值来自 build.py 从云端 settings_public() 拉回的公开设置（写进 config），
+    # 同时允许 site.config.json 直接写死一份 —— 纯静态部署也能有公告。
+    # 运行期 banner.js 会再用 RPC 校一次并就地覆盖，所以站长在后台改完
+    # 立刻生效，不必等下一次构建。
+    ann = config.get("announcement") if isinstance(config.get("announcement"), dict) else {}
+    ann_active = bool(ann.get("active")) and bool(str(ann.get("text") or "").strip())
+    ann_level = str(ann.get("level") or "info").lower()
+    if ann_level not in ("info", "warn", "success"):
+        ann_level = "info"
+    if ann_active:
+        ann_level_cls = "" if ann_level == "info" else f" announce--{ann_level}"
+        announce_html = (
+            f'<div class="announce{ann_level_cls}" data-announce role="region"'
+            f' aria-label="{esc(T("banner.title", lang))}">'
+            '<div class="wrap announce__inner">'
+            '<span class="announce__dot" aria-hidden="true"></span>'
+            f'<p class="announce__text" data-announce-text>{esc(ann.get("text"))}</p>'
+            f'<button class="announce__close" type="button" data-announce-close'
+            f' aria-label="{esc(T("banner.close", lang))}"'
+            f' data-i18n-attr="aria-label:banner.close">×</button>'
+            "</div></div>"
+            # 公告是否已关由浏览器的 localStorage 记忆，这里先不 hidden，
+            # 避免「闪一下再出现」；banner.js 首帧就会按记忆去掉它。
+        )
+    else:
+        announce_html = '<div class="announce" data-announce hidden></div>'
+
+    mnt = config.get("maintenance") if isinstance(config.get("maintenance"), dict) else {}
+    mnt_active = bool(mnt.get("active"))
+    mnt_text = str(mnt.get("message") or "").strip() or T("maintenance.default", lang)
+    mnt_attr = "" if mnt_active else " hidden"
+    maintenance_html = (
+        f'<div class="maintenance" data-maintenance{mnt_attr} role="dialog" aria-modal="true">'
+        '<div class="maintenance__card">'
+        '<span class="maintenance__mark" aria-hidden="true">🛠</span>'
+        f'<h2 class="maintenance__title" data-i18n="maintenance.title">{esc(T("maintenance.title", lang))}</h2>'
+        f'<p class="maintenance__text" data-maintenance-text>{esc(mnt_text)}</p>'
+        f'<p class="maintenance__hint" data-i18n="maintenance.adminHint">{esc(T("maintenance.adminHint", lang))}</p>'
+        "</div></div>"
+    )
+
     theme_boot = THEME_BOOT
     csp_meta = CSP_META
     mirror_script = render_mirror_redirect(config)
@@ -580,6 +623,12 @@ def layout(
         script_tags.append(f'<script src="{root}assets/cloud.js" defer></script>')
         script_tags.append(f'<script src="{root}assets/notify.js" defer></script>')
     script_tags.append(f'<script src="{root}assets/app.js" defer></script>')
+    # 公告条 / 维护模式（B15）：构建期已烘一份兜底，这里再用 settings_public()
+    # 实时校正一次，站长改完不必等重建。放在 app.js 之后、页面专属脚本之前。
+    script_tags.append(f'<script src="{root}assets/banner.js" defer></script>')
+    # 访问上报（B10）：只在云端可用、且非私有页面时生效，脚本内部自判。
+    # 放在 banner.js 之后 —— 它只用到 cloud.js 的接口，和公告条互不依赖。
+    script_tags.append(f'<script src="{root}assets/analytics.js" defer></script>')
     # 完善资料引导（M15）：依赖 app.js 提供的 __wsT 与 cloud.js 的会话状态，
     # 未登录或资料已填时直接返回，所以放在全局脚本层没有额外开销。
     script_tags.append(f'<script src="{root}assets/onboard.js" defer></script>')
@@ -656,6 +705,8 @@ def layout(
 </header>
 <nav class="mobile-nav" data-mobile-nav aria-label="{esc(T("a11y.mobileNav", lang))}" data-i18n-attr="aria-label:a11y.mobileNav">{mobile_nav_html}</nav>
 
+{announce_html}
+
 <main id="main">
 {content}
 </main>
@@ -694,6 +745,7 @@ def layout(
 </div>
 
 <div class="toast" data-toast role="status" aria-live="polite"></div>
+{maintenance_html}
 {scripts_html}
 </body>
 </html>"""

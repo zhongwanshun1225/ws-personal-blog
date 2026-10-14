@@ -45,6 +45,7 @@
   var fieldSummary = q('[name="summary"]');
   var fieldTags = q('[name="tags"]');
   var fieldContent = q('[name="content_md"]');
+  var fieldSchedule = q('[data-write-schedule]');
   var saveBtn = q('[data-post-save]');
   var submitBtn = q('[data-post-submit]');
   var resetBtn = q('[data-post-reset]');
@@ -63,6 +64,9 @@
   var busy = false;
   var editingSlug = '';
   var editingStatus = '';
+  /* 编辑器载入时云端已有的期望发布时间（ISO 串）；用来判断作者有没有改过，
+     只有改过才去调 author_set_publish_at，避免每次提交都多打一次接口。 */
+  var editingPublishAt = '';
   var myPosts = [];
   /* 当前账号是否有「改稿直接生效」权限（来自 my_account().can_publish）；
      仅用来把提示语文案说准，真正的判定在 author_update_post 里 */
@@ -77,6 +81,7 @@
     draft: { label: '草稿', cls: 'status-badge--draft' },
     pending: { label: '待审核', cls: 'status-badge--pending' },
     published: { label: '已发布', cls: 'status-badge--published' },
+    scheduled: { label: '定时发布', cls: 'status-badge--scheduled' },
     rejected: { label: '未通过', cls: 'status-badge--rejected' },
   };
 
@@ -173,6 +178,44 @@
     return date.toLocaleString('zh-CN', {
       month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
     });
+  }
+
+  /* ---------------- A3 定时发布：本地时间 ↔ ISO ----------------
+     datetime-local 的 value 是「本地墙钟时间」，直接 new Date() 会被当 UTC 解析，
+     在 +08:00 会差 8 小时。这里手工拼 ISO，交给服务端按带时区的字符串解析。 */
+  function localInputToIso(value) {
+    var text = String(value || '').trim();
+    if (!text) return null;
+    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(text);
+    if (!m) return null;
+    var date = new Date(
+      Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), 0, 0
+    );
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString();
+  }
+
+  function isoToLocalInput(value) {
+    if (!value) return '';
+    var date = new Date(value);
+    if (isNaN(date.getTime())) return '';
+    function pad(n) { return String(n).padStart(2, '0'); }
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
+      'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+
+  /** 把「当前正在编辑哪一篇」广播给同页的扩展脚本（A4 预览链接 / A5 修订历史）。 */
+  function broadcastEditorState(row) {
+    try {
+      document.dispatchEvent(new CustomEvent('wsblog:editor', {
+        detail: {
+          slug: editingSlug,
+          status: editingStatus,
+          title: (row && row.title) || (fieldTitle && fieldTitle.value) || '',
+          canPublish: !!myCanPublish,
+        },
+      }));
+    } catch (e) { /* 老浏览器不支持 CustomEvent 构造器时静默跳过 */ }
   }
 
   function hideDraftBanner() {
@@ -310,28 +353,31 @@
     });
   }
 
-  /** 已发布文章的 slug 不让改：RPC 不接受改 slug，放开只会让人以为链接跟着变了。 */
+  /** 已发布 / 已定时的文章 slug 不让改：RPC 不接受改 slug，放开只会让人以为链接跟着变了。 */
   function applyLockState() {
     setFormLocked(false);
-    if (editingStatus === 'published' && fieldSlug) fieldSlug.disabled = true;
+    if ((editingStatus === 'published' || editingStatus === 'scheduled') && fieldSlug) {
+      fieldSlug.disabled = true;
+    }
   }
 
-  /** 已发布文章没有「保存草稿」这一步（改稿只有提交一个动作），按钮跟着换。 */
+  /** 已发布 / 已定时的文章没有「保存草稿」这一步（改稿只有提交一个动作），按钮跟着换。 */
   function applyActionButtons() {
-    var published = editingStatus === 'published';
+    var live = editingStatus === 'published' || editingStatus === 'scheduled';
     if (saveBtn) {
-      saveBtn.hidden = published;
+      saveBtn.hidden = live;
       saveBtn.disabled = false;
     }
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.textContent = published ? '提交修改' : '提交审核';
+      submitBtn.textContent = live ? '提交修改' : '提交审核';
     }
   }
 
   function resetForm() {
     editingSlug = '';
     editingStatus = '';
+    editingPublishAt = '';
     if (form) form.reset();
     if (formTitle) formTitle.textContent = '新建投稿';
     if (previewBox) {
@@ -342,12 +388,14 @@
     applyActionButtons();
     renderNote('');
     if (history.replaceState) history.replaceState(null, '', 'write.html');
+    broadcastEditorState(null);
   }
 
   function loadIntoEditor(slug) {
     return C.db()
       .from('cloud_posts')
       .select('title, slug, summary, tags, content_md, status, review_note, updated_at,' +
+              ' publish_at,' +
               ' edit_title, edit_summary, edit_content_md, edit_tags,' +
               ' edit_submitted_at, edit_review_note')
       .eq('slug', slug)
@@ -376,15 +424,18 @@
           previewBox.innerHTML = '';
           previewBox.setAttribute('hidden', '');
         }
+        if (fieldSchedule) fieldSchedule.value = isoToLocalInput(row.publish_at);
+        editingPublishAt = row.publish_at || '';
         applyLockState();
         applyActionButtons();
         renderNote(editingStatus, row.review_note, row);
+        broadcastEditorState(row);
         return row;
       });
   }
 
   function readForm(status) {
-    return {
+    var data = {
       title: (fieldTitle && fieldTitle.value || '').trim(),
       slug: slugify((fieldSlug && fieldSlug.value) || (fieldTitle && fieldTitle.value) || ''),
       summary: (fieldSummary && fieldSummary.value || '').trim(),
@@ -393,6 +444,12 @@
       status: status,
       updated_at: new Date().toISOString(),
     };
+    /* A3：期望发布时间。留空 = NULL（由站长在审核时决定；不写 null 是因为
+       PostgREST 的 update 里显式 null 才会清掉旧值，这里是有意为之）。 */
+    if (fieldSchedule) {
+      data.publish_at = localInputToIso(fieldSchedule.value);
+    }
+    return data;
   }
 
   /** author_update_post 的 error 码 → 人话。 */
@@ -403,7 +460,36 @@
     not_published: '这篇文章还没发布，请走普通的草稿 / 投稿流程',
     title_required: '标题不能为空',
     content_required: '正文不能为空',
+    forbidden_published: '这篇文章已经在线上，改发布时间需要「改稿直接生效」权限，找站长开一下。',
+    bad_time: '发布时间看不懂，重新选一下。',
   };
+
+  /** A3：作者改动了「期望发布时间」时，单独同步一次（author_update_post 不管这列）。
+      非受信任作者在已发布文章上会被服务端拒掉，这时给出人话提示而不是静默失败。 */
+  function syncSchedule() {
+    if (!fieldSchedule) return Promise.resolve();
+    var want = localInputToIso(fieldSchedule.value);
+    var before = editingPublishAt ? new Date(editingPublishAt).getTime() : 0;
+    var after = want ? new Date(want).getTime() : 0;
+    if (before === after) return Promise.resolve();
+    return C.db().rpc('author_set_publish_at', {
+      p_slug: editingSlug,
+      p_at: want || '',
+    })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var out = res && res.data;
+        if (out && out.ok === true) {
+          var when = out.publish_at ? formatWhen(out.publish_at) : '立即（等审核通过）';
+          toast(out.status === 'scheduled' ? '已安排在 ' + when + ' 自动上线' : '发布时间已更新：' + when);
+          return;
+        }
+        toast(EDIT_ERRORS[out && out.error] || '发布时间没能保存');
+      })
+      .catch(function (err) {
+        toast((err && (err.message || err.error_description)) || '发布时间没能保存');
+      });
+  }
 
   /** 已发布文章的改稿：走 author_update_post，由服务端决定「直接生效」还是「进待审」。 */
   function savePublishedEdit() {
@@ -450,7 +536,7 @@
         if (keyBefore && window.WSBlogDraft) window.WSBlogDraft.remove(keyBefore);
         hideDraftBanner();
         if (draftCtrl) draftCtrl.markSaved(direct ? '已生效' : '已提交待审');
-        return loadIntoEditor(editingSlug);
+        return syncSchedule().then(function () { return loadIntoEditor(editingSlug); });
       })
       .then(function () { return loadMine(); })
       .catch(function (err) {
@@ -464,8 +550,10 @@
 
   function save(status) {
     if (busy) return;
-    /* 已发布文章没有草稿态，只有「提交修改」一条路 */
-    if (editingSlug && editingStatus === 'published') return savePublishedEdit();
+    /* 已发布 / 已定时的文章没有草稿态，只有「提交修改」一条路 */
+    if (editingSlug && (editingStatus === 'published' || editingStatus === 'scheduled')) {
+      return savePublishedEdit();
+    }
     if (C.requireLogin()) return;
     if (C.requireActive()) return;
 
@@ -517,6 +605,8 @@
         if (draftCtrl) {
           draftCtrl.markSaved(status === 'pending' ? '已提交审核' : '已保存到云端');
         }
+        editingPublishAt = (rows[0] && rows[0].publish_at) || '';
+        broadcastEditorState(rows[0]);
         return loadMine();
       })
       .catch(function (err) {
