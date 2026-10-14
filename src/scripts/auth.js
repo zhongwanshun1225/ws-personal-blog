@@ -87,6 +87,248 @@
     return message || fallback || '操作失败，请稍后重试';
   }
 
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function t(key, fallback) {
+    if (typeof window.__wsT === 'function') {
+      var str = window.__wsT(key, fallback);
+      if (str) return str;
+    }
+    return fallback || key;
+  }
+
+  function fill(key, fallback, vars) {
+    var text = t(key, fallback);
+    if (!vars) return text;
+    Object.keys(vars).forEach(function (name) {
+      text = text.split('{' + name + '}').join(String(vars[name]));
+    });
+    return text;
+  }
+
+  /* ---------------- 第三方登录（M8） ----------------
+   * 走 SDK 的 signInWithOAuth：它会先把 PKCE 的 code_verifier 存进 sessionStorage，
+   * 再整页跳到 oauthRelayBaseUrl 中转；授权完成后浏览器回到本页
+   * （redirectTo 默认取 origin + pathname），URL 上带 code / state / provider_id，
+   * 这时调 handleOAuthCallback() 换会话。
+   *
+   * ⚠️ provider 只列实测可用的：wechat（跳微信扫码页）与 google（跳 Google 授权页）。
+   *    workbuddy 这个 provider 目前中转会返回 400「WorkBuddy login could not be
+   *    completed」，所以界面上不暴露它（SDK 支持不代表中转可用）。
+   */
+
+  var oauthWrap = q('[data-oauth]');
+  var oauthButtons = q('[data-oauth-buttons]');
+  var oauthBusy = false;
+
+  var OAUTH_PROVIDERS = [
+    { id: 'wechat', key: 'auth.oauthWechat', fallback: '微信' },
+    { id: 'google', key: 'auth.oauthGoogle', fallback: 'Google' },
+  ];
+
+  function renderOAuth() {
+    if (!oauthWrap || !oauthButtons) return;
+    var auth = C.cloud ? C.cloud().auth : null;
+    if (!auth || typeof auth.signInWithOAuth !== 'function' || !C.config || !C.config.oauthRelayBaseUrl) {
+      oauthWrap.setAttribute('hidden', '');
+      return;
+    }
+    oauthWrap.removeAttribute('hidden');
+    oauthButtons.innerHTML = OAUTH_PROVIDERS.map(function (item) {
+      return (
+        '<button class="btn btn--ghost btn--sm oauth-btn oauth-btn--' + item.id + '" type="button" ' +
+        'data-oauth-provider="' + item.id + '">' +
+        esc(t(item.key, item.fallback)) +
+        '</button>'
+      );
+    }).join('');
+
+    qa('[data-oauth-provider]', oauthButtons).forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (oauthBusy) return;
+        startOAuth(btn.getAttribute('data-oauth-provider'));
+      });
+    });
+  }
+
+  function startOAuth(provider) {
+    var auth = C.cloud().auth;
+    oauthBusy = true;
+    showError('');
+    showNotice(t('auth.oauthPending', '正在跳转…'));
+    qa('[data-oauth-provider]', oauthButtons).forEach(function (btn) {
+      btn.disabled = true;
+    });
+    auth
+      .signInWithOAuth({ provider: provider })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        /* 正常路径下浏览器已经跳走了，走不到这里 */
+      })
+      .catch(function (err) {
+        oauthBusy = false;
+        qa('[data-oauth-provider]', oauthButtons).forEach(function (btn) {
+          btn.disabled = false;
+        });
+        showNotice('');
+        showError(friendly(err, t('auth.oauthFail', '第三方登录失败，请重试或改用邮箱登录')));
+      });
+  }
+
+  /** URL 上带着授权码回来时才算 OAuth 回调。 */
+  function isOAuthCallback() {
+    var params = new URLSearchParams(location.search);
+    return !!params.get('code') && params.get('provider_id') === 'custom-oauth';
+  }
+
+  function handleOAuthCallback() {
+    var auth = C.cloud().auth;
+    if (typeof auth.handleOAuthCallback !== 'function') return Promise.resolve(false);
+    setBusy(true, '正在完成登录…');
+    return auth
+      .handleOAuthCallback()
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        if (!res || !res.data) throw new Error(t('auth.oauthCallbackFail', '第三方登录没有完成，请重新试一次'));
+        return afterLogin().then(function () {
+          return true;
+        });
+      })
+      .catch(function (err) {
+        setBusy(false);
+        showError(friendly(err, t('auth.oauthCallbackFail', '第三方登录没有完成，请重新试一次')));
+        /* 把回调参数清掉，否则刷新页面会反复重试同一个失效的 code */
+        try {
+          window.history.replaceState(null, '', location.pathname);
+        } catch (e) {
+          /* 忽略 */
+        }
+        return false;
+      });
+  }
+
+  /* ---------------- 登录失败次数锁定（M14） ----------------
+   * 这是**前端**的减速带，不是安全边界：真正的防爆破靠服务端限流。
+   * 目的是别让「对着一个邮箱狂试密码」在页面上毫无代价地连续发生。
+   * 只存在本机 localStorage，换设备或清缓存即失效 —— 所以文案里也明说了。
+   */
+
+  var LOCK_KEY = 'wsblog:auth-lock:v1';
+  var MAX_FAILS = 5;
+  var LOCK_MS = 5 * 60 * 1000;
+
+  var lockBox = q('[data-auth-lock]');
+  var lockTimer = null;
+
+  function lockStore() {
+    try {
+      var raw = window.localStorage.getItem(LOCK_KEY);
+      var data = raw ? JSON.parse(raw) : null;
+      return data && typeof data === 'object' ? data : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function saveLockStore(data) {
+    try {
+      window.localStorage.setItem(LOCK_KEY, JSON.stringify(data));
+    } catch (err) {
+      /* 隐私模式：本次会话内不记失败次数 */
+    }
+  }
+
+  function lockKey(email) {
+    return String(email || '').trim().toLowerCase();
+  }
+
+  function lockState(email) {
+    var store = lockStore();
+    return store[lockKey(email)] || { fails: 0, until: 0 };
+  }
+
+  /** 记一次失败；达到阈值就给这个邮箱上一把 5 分钟的锁。 */
+  function noteFail(email) {
+    var store = lockStore();
+    var key = lockKey(email);
+    var record = store[key] || { fails: 0, until: 0 };
+    record.fails = (record.fails || 0) + 1;
+    if (record.fails >= MAX_FAILS) {
+      record.fails = 0;
+      record.until = Date.now() + LOCK_MS;
+    }
+    store[key] = record;
+    saveLockStore(store);
+    return record;
+  }
+
+  function clearFail(email) {
+    var store = lockStore();
+    delete store[lockKey(email)];
+    saveLockStore(store);
+  }
+
+  /** 认证类错误才计失败；断网、限流不算，否则网络抖动也会把人锁住。 */
+  function isAuthFailure(err) {
+    var kind = (err && err.kind) || '';
+    var message = String((err && err.message) || '');
+    if (kind === 'invalid_grant' || kind === 'unauthenticated') return true;
+    if (kind === 'network' || kind === 'backend-unavailable' || kind === 'rate_limit') return false;
+    return /invalid login|invalid credentials|wrong password|invalid_grant/i.test(message);
+  }
+
+  function hideLock() {
+    if (lockTimer) {
+      clearInterval(lockTimer);
+      lockTimer = null;
+    }
+    if (!lockBox) return;
+    lockBox.setAttribute('hidden', '');
+    lockBox.textContent = '';
+    if (submitBtn && !busy) submitBtn.disabled = false;
+  }
+
+  /** 锁定中 → 倒计时并禁用提交；未锁定但已有失败 → 提示还剩几次。 */
+  function applyLock(email) {
+    if (!lockBox) return;
+    var state = lockState(email);
+    if (state.until && state.until > Date.now()) {
+      var tick = function () {
+        var left = Math.ceil((state.until - Date.now()) / 1000);
+        if (left <= 0) {
+          hideLock();
+          showNotice('');
+          return;
+        }
+        lockBox.removeAttribute('hidden');
+        lockBox.innerHTML =
+          '<strong>' + esc(t('auth.lockTitle', '尝试次数过多，已暂时锁定')) + '</strong>' +
+          '<span>' + esc(fill('auth.lockWait', '请等 {n} 秒后再试', { n: left })) + '</span>' +
+          '<small>' + esc(t('auth.lockSaved', '为了减少无效尝试，本站会在本机记录失败次数')) + '</small>';
+        if (submitBtn) submitBtn.disabled = true;
+      };
+      if (lockTimer) clearInterval(lockTimer);
+      tick();
+      lockTimer = setInterval(tick, 1000);
+      return;
+    }
+    hideLock();
+    if (state.fails > 0) {
+      lockBox.removeAttribute('hidden');
+      lockBox.innerHTML =
+        '<span>' +
+        esc(fill('auth.lockLeft', '还剩 {n} 次机会，之后会锁定 5 分钟', { n: MAX_FAILS - state.fails })) +
+        '</span>';
+    }
+  }
+
   /* ---------------- 外部参数 ---------------- */
 
   function nextUrl() {
@@ -363,11 +605,17 @@
       C.signInWithPassword(email, password)
         .then(function (res) {
           if (res && res.error) throw res.error;
+          clearFail(email);
+          hideLock();
           return afterLogin();
         })
         .catch(function (err) {
           setBusy(false);
           showError(friendly(err, '登录失败，请稍后重试'));
+          if (isAuthFailure(err)) {
+            noteFail(email);
+            applyLock(email);
+          }
         });
       return;
     }
@@ -396,11 +644,17 @@
       .then(function (res) {
         if (res && res.error) throw res.error;
         pendingOtp = null;
+        clearFail(email);
+        hideLock();
         return afterLogin();
       })
       .catch(function (err) {
         setBusy(false);
         showError(friendly(err, '验证码校验失败'));
+        if (isAuthFailure(err)) {
+          noteFail(email);
+          applyLock(email);
+        }
       });
   }
 
@@ -530,6 +784,22 @@
   applyMethod('password');
   checkOrigin();
   bindSignedIn();
+  renderOAuth();
+
+  /* 换一个邮箱就按那个邮箱的记录重新评估锁定状态 */
+  if (emailInput) {
+    emailInput.addEventListener('input', function () {
+      applyLock(emailInput.value);
+    });
+  }
+
+  /* OAuth 回调优先：URL 上带着授权码回来时，由它决定跳到哪儿 */
+  if (isOAuthCallback()) {
+    handleOAuthCallback();
+    return;
+  }
+
+  applyLock(emailInput ? emailInput.value : '');
 
   C.booted().then(function () {
     if (renderSignedIn()) {

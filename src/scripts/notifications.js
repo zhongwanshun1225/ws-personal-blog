@@ -81,6 +81,37 @@
       cls: 'unpublished',
       icon: svg('<path d="M4 4l16 16"></path><path d="M9.9 5.1A9 9 0 0 1 21 12c-.4 1.3-1.2 2.5-2.3 3.4"></path><path d="M6.1 7.3A9.3 9.3 0 0 0 3 12c1.5 3.5 5 6 9 6 1.1 0 2.2-.2 3.2-.6"></path>'),
     },
+    /* 第六批新增（M4 / M5 / M13）。类名只用于区分语义，样式沿用 .notif__kind 基础款。 */
+    mention: {
+      label: '提及',
+      cls: 'mention',
+      icon: svg('<circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3.4"></circle><path d="M21 12v1.5a2.5 2.5 0 0 1-5 0V12"></path>'),
+    },
+    email_request: {
+      label: '邮箱申请',
+      cls: 'request',
+      icon: svg('<path d="M3 7.5 12 13l9-5.5"></path><rect x="3" y="5" width="18" height="14" rx="2"></rect>'),
+    },
+    email_changed: {
+      label: '邮箱已更新',
+      cls: 'approved',
+      icon: svg('<path d="M20 6 9 17l-5-5"></path>'),
+    },
+    email_change_rejected: {
+      label: '申请未通过',
+      cls: 'rejected',
+      icon: svg('<path d="M18 6 6 18"></path><path d="M6 6l12 12"></path>'),
+    },
+    report_resolved: {
+      label: '举报已处理',
+      cls: 'approved',
+      icon: svg('<path d="M20 6 9 17l-5-5"></path>'),
+    },
+    report_dismissed: {
+      label: '举报未处理',
+      cls: 'dismissed',
+      icon: svg('<circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path>'),
+    },
   };
 
   /* ---------------- 小工具 ---------------- */

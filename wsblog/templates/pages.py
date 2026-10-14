@@ -1186,8 +1186,22 @@ def post_interact_block(
         <button class="comment-form__cancel" type="button" data-reply-cancel data-i18n="interact.cancel">{esc(T("interact.cancel", lang))}</button>
       </div>
       <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="{esc(T("interact.placeholder", lang))}" data-i18n-attr="placeholder:interact.placeholder"></textarea>
+      <div class="comment-format" data-comment-format>
+        <button class="comment-format__btn" type="button" data-emoji-toggle aria-expanded="false">
+          <span aria-hidden="true">😊</span> <span data-i18n="interact.emoji">{esc(T("interact.emoji", lang))}</span>
+        </button>
+        <button class="comment-format__btn" type="button" data-code-insert>
+          <span aria-hidden="true">&#96;&#96;&#96;</span> <span data-i18n="interact.insertCode">{esc(T("interact.insertCode", lang))}</span>
+        </button>
+        <span class="comment-format__hint" data-i18n="interact.formatHint">{esc(T("interact.formatHint", lang))}</span>
+        <div class="emoji-picker" data-emoji-picker hidden></div>
+      </div>
       <div class="comment-form__foot">
-        <span class="comment-form__hint" data-i18n="interact.hint">{esc(T("interact.hint", lang))}</span>
+        <span class="comment-form__hint">
+          <span data-i18n="interact.hint">{esc(T("interact.hint", lang))}</span>
+          <span class="comment-form__sep">·</span>
+          <span data-i18n="interact.mentionHint">{esc(T("interact.mentionHint", lang))}</span>
+        </span>
         <button class="btn btn--primary btn--sm" type="submit" data-comment-submit data-i18n="interact.submit">{esc(T("interact.submit", lang))}</button>
       </div>
     </form>
@@ -1269,9 +1283,15 @@ def login_page(*, config: dict, root: str = "") -> str:
           </div>
 
           <div class="auth-error" data-auth-error hidden></div>
+          <div class="auth-lock" data-auth-lock hidden></div>
           <div class="auth-notice" data-auth-notice hidden></div>
 
           <button class="btn btn--primary btn--block" type="submit" data-auth-submit data-i18n="auth.submitPassword">{L("auth.submitPassword")}</button>
+
+          <div class="auth-oauth" data-oauth hidden>
+            <div class="auth-oauth__sep"><span data-i18n="auth.oauthOr">{L("auth.oauthOr")}</span></div>
+            <div class="auth-oauth__buttons" data-oauth-buttons></div>
+          </div>
         </form>
 
         <p class="auth-foot">
@@ -1371,6 +1391,11 @@ def login_page(*, config: dict, root: str = "") -> str:
 # ---------- 个人中心 ----------
 
 def account_page(*, config: dict, root: str = "") -> str:
+    lang = _lang(config)
+
+    def L(key: str) -> str:
+        return esc(T(key, lang))
+
     return f"""<div class="wrap" data-account>
   <div class="page-head">
     <span class="eyebrow">Account</span>
@@ -1385,10 +1410,11 @@ def account_page(*, config: dict, root: str = "") -> str:
         <div class="account-card__name" data-account-name>加载中…</div>
         <p class="account-card__bio" data-account-bio>—</p>
         <dl class="account-meta">
-          <div><dt>邮箱</dt><dd data-account-email>—</dd></div>
+          <div><dt>邮箱</dt><dd><span data-account-email>—</span> <span class="badge badge--muted" data-email-status hidden>—</span></dd></div>
           <div><dt>身份</dt><dd data-account-role>—</dd></div>
           <div><dt>注册时间</dt><dd data-account-joined>—</dd></div>
         </dl>
+        <p class="account-card__pending" data-account-pending hidden></p>
         <div class="account-card__actions">
           <button class="btn btn--ghost btn--sm" type="button" data-account-identity hidden>切换身份</button>
           <button class="btn btn--danger btn--sm" type="button" data-account-signout>退出登录</button>
@@ -1397,7 +1423,7 @@ def account_page(*, config: dict, root: str = "") -> str:
     </aside>
 
     <div class="account-main">
-      <section class="panel">
+      <section class="panel" data-onboard-target>
         <div class="panel__head">
           <h2 class="panel__title">资料设置</h2>
           <span class="panel__hint">昵称会显示在你的评论上</span>
@@ -1414,6 +1440,7 @@ def account_page(*, config: dict, root: str = "") -> str:
                      data-profile-avatar>
               <button class="btn btn--ghost btn--sm" type="button" data-avatar-upload>上传头像</button>
             </div>
+            <span class="field__note">上传后可以在弹窗里裁剪并压缩，不会把手机原图直接塞进存储。</span>
           </div>
           <label class="field field--full">
             <span class="field__label">个人简介</span>
@@ -1427,7 +1454,7 @@ def account_page(*, config: dict, root: str = "") -> str:
 
       <section class="panel">
         <div class="panel__head">
-          <h2 class="panel__title">安全设置</h2>
+          <h2 class="panel__title">账号安全</h2>
           <span class="panel__hint">改完立即生效，当前登录不会被踢下线</span>
         </div>
         <form class="form-grid" onsubmit="return false">
@@ -1455,6 +1482,65 @@ def account_page(*, config: dict, root: str = "") -> str:
 
       <section class="panel">
         <div class="panel__head">
+          <h2 class="panel__title">邮箱</h2>
+          <span class="panel__hint" data-i18n="account.emailVerifyHint">{L("account.emailVerifyHint")}</span>
+        </div>
+
+        <div class="inline-form">
+          <input class="field__input mono" type="email" readonly data-email-readonly>
+          <span class="badge badge--muted" data-email-badge hidden>—</span>
+          <button class="btn btn--ghost btn--sm" type="button" data-email-verify>{L("account.emailVerify")}</button>
+        </div>
+
+        <div class="verify-box" data-email-verify-box hidden>
+          <div class="inline-form">
+            <input class="field__input" type="text" inputmode="numeric" placeholder="{L("auth.codePlaceholder")}"
+                   data-email-code>
+            <button class="btn btn--ghost btn--sm" type="button" data-email-code-send>{L("account.emailVerifySend")}</button>
+            <button class="btn btn--primary btn--sm" type="button" data-email-code-submit>{L("account.emailVerifySubmit")}</button>
+          </div>
+          <span class="field__note" data-email-verify-note></span>
+        </div>
+
+        <details class="account-details">
+          <summary>{L("account.emailChange")}</summary>
+          <p class="field__note" data-i18n="account.emailChangeHint">{L("account.emailChangeHint")}</p>
+          <form class="form-grid" onsubmit="return false">
+            <label class="field">
+              <span class="field__label">{L("account.emailNew")}</span>
+              <input class="field__input" type="email" placeholder="new@example.com" data-email-new>
+            </label>
+            <label class="field">
+              <span class="field__label">{L("account.emailPassword")}</span>
+              <input class="field__input" type="password" autocomplete="current-password" maxlength="64"
+                     data-email-password>
+            </label>
+            <label class="field field--full">
+              <span class="field__label">{L("account.emailNote")}</span>
+              <input class="field__input" type="text" maxlength="200" data-email-change-note>
+            </label>
+            <div class="form-grid__foot">
+              <button class="btn btn--primary btn--sm" type="button" data-email-change-submit>{L("account.emailSubmit")}</button>
+            </div>
+          </form>
+        </details>
+      </section>
+
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">{L("account.sessions")}</h2>
+          <span class="panel__hint" data-i18n="account.sessionsHint">{L("account.sessionsHint")}</span>
+        </div>
+        <ul class="stack" data-session-list>
+          <li class="stack-empty">加载中…</li>
+        </ul>
+        <div class="form-grid__foot">
+          <button class="btn btn--danger btn--sm" type="button" data-session-kill>{L("account.sessionKill")}</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel__head">
           <h2 class="panel__title">我的投稿</h2>
           <span class="panel__hint">
             共 <span data-my-post-count>0</span> 篇 · <a href="{root}write.html">写新文章</a>
@@ -1477,11 +1563,84 @@ def account_page(*, config: dict, root: str = "") -> str:
       <section class="panel">
         <div class="panel__head">
           <h2 class="panel__title">我的收藏</h2>
+          <span class="panel__hint" data-i18n="account.bookmarkPrivateHint">{L("account.bookmarkPrivateHint")}</span>
         </div>
+        <div class="chip-row" data-folder-bar></div>
         <ul class="stack" data-my-bookmarks>
           <li class="stack-empty">加载中…</li>
         </ul>
       </section>
+
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">{L("reading.title")}</h2>
+        </div>
+        <ul class="stack" data-my-reading>
+          <li class="stack-empty">加载中…</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <div class="panel__head">
+          <h2 class="panel__title">{L("account.blocks")}</h2>
+          <span class="panel__hint" data-i18n="account.blocksHint">{L("account.blocksHint")}</span>
+        </div>
+        <ul class="stack" data-my-blocks>
+          <li class="stack-empty">加载中…</li>
+        </ul>
+      </section>
+
+      <section class="panel panel--danger">
+        <div class="panel__head">
+          <h2 class="panel__title">{L("account.dataTitle")}</h2>
+        </div>
+        <div class="data-actions">
+          <div class="data-action">
+            <strong>{L("account.export")}</strong>
+            <p class="field__note" data-i18n="account.exportHint">{L("account.exportHint")}</p>
+            <button class="btn btn--ghost btn--sm" type="button" data-export-data>{L("account.export")}</button>
+          </div>
+          <div class="data-action">
+            <strong>{L("account.delete")}</strong>
+            <p class="field__note" data-i18n="account.deleteHint">{L("account.deleteHint")}</p>
+            <button class="btn btn--danger btn--sm" type="button" data-delete-account>{L("account.delete")}</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="modal" data-avatar-modal hidden>
+    <div class="modal__panel modal__panel--crop">
+      <h3 class="modal__title">{L("account.cropTitle")}</h3>
+      <p class="field__note" data-i18n="account.cropHint">{L("account.cropHint")}</p>
+      <div class="crop-stage" data-crop-stage>
+        <canvas class="crop-canvas" data-crop-canvas width="256" height="256"></canvas>
+      </div>
+      <label class="field">
+        <span class="field__label">{L("account.cropZoom")}</span>
+        <input class="field__input" type="range" min="100" max="320" value="100" data-crop-zoom>
+      </label>
+      <div class="modal__actions">
+        <button class="btn btn--ghost btn--sm" type="button" data-crop-cancel>{L("account.cropCancel")}</button>
+        <button class="btn btn--primary btn--sm" type="button" data-crop-apply>{L("account.cropApply")}</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" data-delete-modal hidden>
+    <div class="modal__panel">
+      <h3 class="modal__title">{L("account.deleteTitle")}</h3>
+      <p class="field__note" data-i18n="account.deleteHint">{L("account.deleteHint")}</p>
+      <label class="field">
+        <span class="field__label">{L("account.deleteType")}</span>
+        <input class="field__input mono" type="text" autocomplete="off" spellcheck="false" placeholder="DELETE"
+               data-delete-confirm>
+      </label>
+      <div class="modal__actions">
+        <button class="btn btn--ghost btn--sm" type="button" data-delete-cancel>{L("account.deleteCancel")}</button>
+        <button class="btn btn--danger btn--sm" type="button" data-delete-submit>{L("account.deleteSubmit")}</button>
+      </div>
     </div>
   </div>
 </div>"""
@@ -1649,12 +1808,15 @@ def admin_page(*, config: dict, root: str = "") -> str:
     <div class="admin-stat"><div class="admin-stat__value" data-stat-drafts>0</div><div class="admin-stat__label">草稿</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-pending>0</div><div class="admin-stat__label">待审核投稿</div></div>
     <div class="admin-stat"><div class="admin-stat__value" data-stat-edit-pending>0</div><div class="admin-stat__label">待审改稿</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-open-reports>0</div><div class="admin-stat__label">待处理举报</div></div>
+    <div class="admin-stat"><div class="admin-stat__value" data-stat-email-requests>0</div><div class="admin-stat__label">邮箱变更申请</div></div>
   </div>
 
   <div class="admin-tabs" role="tablist" aria-label="后台分区">
     <button class="admin-tab is-active" type="button" role="tab" aria-selected="true" data-admin-tab="posts">文章管理</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="review">内容审核 <span class="admin-tab__badge" data-review-badge hidden>0</span></button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="comments">评论管理</button>
+    <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="reports">举报与申请 <span class="admin-tab__badge" data-reports-badge hidden>0</span></button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="users">用户</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="admins">管理员</button>
     <button class="admin-tab" type="button" role="tab" aria-selected="false" data-admin-tab="audit">操作日志</button>
@@ -1857,6 +2019,53 @@ def admin_page(*, config: dict, root: str = "") -> str:
     </div>
   </section>
 
+  <section class="admin-panel" data-admin-panel="reports" hidden>
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">评论举报</h2>
+        <span class="panel__hint">
+          读者提交的举报。处理时会自动通知举报人；被举报评论可以直接隐藏或删除
+          （当前 <span data-report-open>0</span> 条待处理）
+        </span>
+      </div>
+      <div class="admin-toolbar">
+        <div class="chip-row">
+          <button class="chip is-active" type="button" data-report-filter="open">待处理</button>
+          <button class="chip" type="button" data-report-filter="all">全部</button>
+          <button class="chip" type="button" data-report-filter="resolved">已处理</button>
+          <button class="chip" type="button" data-report-filter="dismissed">已忽略</button>
+        </div>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>举报人</th><th>被举报评论</th><th>原因</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody data-admin-reports>
+            <tr><td colspan="6" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="admin-pager" data-report-pager></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">邮箱变更申请</h2>
+        <span class="panel__hint">
+          云平台没有开放改邮箱能力，所以只能走这条路：你在云控制台把用户的登录邮箱改掉，
+          再回来点「已完成」，申请人会收到通知（当前 <span data-email-request-count>0</span> 条待处理）
+        </span>
+      </div>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>用户</th><th>当前邮箱</th><th>申请改为</th><th>说明</th><th>申请时间</th><th>操作</th></tr></thead>
+          <tbody data-admin-email-requests>
+            <tr><td colspan="6" class="admin-empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <section class="admin-panel" data-admin-panel="users" hidden>
     <div class="panel">
       <div class="panel__head">
@@ -1869,16 +2078,18 @@ def admin_page(*, config: dict, root: str = "") -> str:
           <option value="all">全部账号</option>
           <option value="active">正常</option>
           <option value="disabled">已禁用</option>
+          <option value="deleted">已注销</option>
+          <option value="email">有待处理邮箱申请</option>
           <option value="admin">管理员</option>
         </select>
       </div>
       <div class="admin-table-wrap">
         <table class="admin-table">
           <thead>
-            <tr><th>昵称 / ID</th><th>邮箱</th><th>状态</th><th>角色</th><th>改稿权限</th><th>互动</th><th>注册时间</th><th>操作</th></tr>
+            <tr><th>昵称 / ID</th><th>邮箱</th><th>邮箱状态</th><th>状态</th><th>角色</th><th>改稿权限</th><th>互动</th><th>注册时间</th><th>操作</th></tr>
           </thead>
           <tbody data-admin-users>
-            <tr><td colspan="8" class="admin-empty">加载中…</td></tr>
+            <tr><td colspan="9" class="admin-empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -2119,39 +2330,5 @@ def cloud_post_page(*, config: dict, root: str = "") -> str:
     {share_block()}
     <div data-cloud-postnav></div>
   </footer>
-  <section class="interact" data-interact data-post-title="">
-    <div class="interact__bar">
-      <button class="interact__btn" type="button" data-like aria-pressed="false">
-        {_LOGIN_ICONS["heart"]}<span>点赞</span><span class="interact__count" data-like-count>0</span>
-      </button>
-      <button class="interact__btn" type="button" data-bookmark aria-pressed="false">
-        {_LOGIN_ICONS["bookmark"]}<span data-bookmark-label>收藏</span>
-      </button>
-      <span class="interact__views">
-        {_LOGIN_ICONS["eye"]}<span data-views-count>0</span> 次阅读
-      </span>
-    </div>
-    <div class="comments">
-      <div class="comments__head">
-        <h2 class="comments__title">{_LOGIN_ICONS["comment"]}<span>评论</span></h2>
-        <span class="comments__count"><span data-comment-count>0</span> 条</span>
-      </div>
-      <div class="comment-gate" data-comment-gate>
-        <p>登录后可以参与讨论。</p>
-        <a class="btn btn--primary btn--sm" href="{root}login.html?next=/posts.html">登录 / 注册</a>
-      </div>
-      <form class="comment-form" data-comment-form hidden>
-        <div class="comment-form__target" data-reply-bar hidden>
-          正在回复 <strong data-reply-name></strong>
-          <button class="comment-form__cancel" type="button" data-reply-cancel>取消</button>
-        </div>
-        <textarea class="comment-form__input" data-comment-input rows="3" maxlength="1000" placeholder="写下你的看法…"></textarea>
-        <div class="comment-form__foot">
-          <span class="comment-form__hint">最多 1000 字 · 提交后需站长审核才公开</span>
-          <button class="btn btn--primary btn--sm" type="submit" data-comment-submit>发表评论</button>
-        </div>
-      </form>
-      <ul class="comment-list" data-comment-list></ul>
-    </div>
-  </section>
+  {post_interact_block(post_slug="", post_title="", root=root, login_next="posts.html", lang=lang)}
 </div>"""

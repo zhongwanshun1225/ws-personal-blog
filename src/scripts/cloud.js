@@ -382,6 +382,86 @@
     });
   }
 
+  /* ---------------- 登录设备登记（M6） ----------------
+   * 云平台没有会话列表接口，所以「登录设备」是本站自己记的：
+   * 每台设备生成一个随机串存 localStorage，每次页面加载调 session_touch 续期。
+   * 在个人中心点「退出其他设备」后，那些设备下次访问时会被 session_touch
+   * 告知 revoked=true，这里立即登出 —— 协作式软踢出，不是平台级吊销。
+   */
+
+  var SESSION_KEY_STORE = 'wsblog:session-key';
+
+  function localSessionKey() {
+    var key = '';
+    try {
+      key = window.localStorage.getItem(SESSION_KEY_STORE) || '';
+    } catch (err) {
+      key = '';
+    }
+    if (key) return key;
+    try {
+      key =
+        window.crypto && typeof window.crypto.randomUUID === 'function'
+          ? window.crypto.randomUUID()
+          : String(Date.now()) + '-' + Math.random().toString(36).slice(2, 12);
+    } catch (err) {
+      key = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 12);
+    }
+    try {
+      window.localStorage.setItem(SESSION_KEY_STORE, key);
+    } catch (err) {
+      /* 隐私模式：本次会话内用内存值，下次访问会生成新 key（表现为多一条设备） */
+    }
+    return key;
+  }
+
+  /** 粗略的设备名：只用于列表展示，不作为任何判定依据。 */
+  function deviceLabel() {
+    var ua = navigator.userAgent || '';
+    var os = /Windows/i.test(ua) ? 'Windows'
+      : /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
+      : /Android/i.test(ua) ? 'Android'
+      : /Mac OS X/i.test(ua) ? 'macOS'
+      : /Linux/i.test(ua) ? 'Linux'
+      : '未知系统';
+    var browser = /Edg\//i.test(ua) ? 'Edge'
+      : /OPR\//i.test(ua) ? 'Opera'
+      : /Firefox\//i.test(ua) ? 'Firefox'
+      : /Chrome\//i.test(ua) ? 'Chrome'
+      : /Safari\//i.test(ua) ? 'Safari'
+      : '浏览器';
+    return browser + ' · ' + os;
+  }
+
+  /** 登记 / 刷新本机登录记录。被踢出时立即登出并提示。 */
+  function touchSession() {
+    if (!currentSession) return Promise.resolve(null);
+    var key = localSessionKey();
+    return Promise.resolve()
+      .then(function () {
+        return db().rpc('session_touch', {
+          p_key: key,
+          p_label: deviceLabel(),
+          p_ua: String(navigator.userAgent || '').slice(0, 200),
+        });
+      })
+      .then(function (res) {
+        if (res && res.error) throw res.error;
+        var data = (res && res.data) || null;
+        if (data && data.revoked === true) {
+          return signOut().then(function () {
+            toast('这个设备上的登录已在别处退出，请重新登录');
+            return null;
+          });
+        }
+        return data;
+      })
+      .catch(function (err) {
+        console.warn('[WSBlogCloud] 登录设备登记失败', err && err.message);
+        return null;
+      });
+  }
+
   /** 管理员页面守卫：未登录跳登录页；白名单账号自动切到管理员身份；其余跳首页。 */
   function guardAdmin() {
     if (!currentSession) {
@@ -543,6 +623,10 @@
     requireLogin: requireLogin,
     onSessionChange: onSessionChange,
     renderSlot: renderSlot,
+    /* 登录设备（M6） */
+    sessionKey: localSessionKey,
+    deviceLabel: deviceLabel,
+    touchSession: touchSession,
   };
 
   onSessionChange(renderSlot);
@@ -552,6 +636,12 @@
   var bootPromise = waitForSdk()
     .then(function () {
       return refresh();
+    })
+    .then(function (session) {
+      /* 登录设备登记（M6）。失败不影响使用：本地预览的 Origin 会被云端拒绝，
+         线上正常；被软踢出时 touchSession 内部会自行登出。 */
+      if (session) touchSession();
+      return session;
     })
     .catch(function (err) {
       console.warn('[WSBlogCloud] 初始化失败：' + (err && err.message));

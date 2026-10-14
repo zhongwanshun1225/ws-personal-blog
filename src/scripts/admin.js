@@ -70,6 +70,13 @@
   var wordInput = q('[data-word-input]');
   var wordAddBtn = q('[data-word-add]');
   var wordListEl = q('[data-word-list]');
+  /* 举报与邮箱变更申请（M13 / M5） */
+  var reportsBadgeEl = q('[data-reports-badge]');
+  var reportsBody = q('[data-admin-reports]');
+  var reportOpenEl = q('[data-report-open]');
+  var reportPagerEl = q('[data-report-pager]');
+  var emailRequestsBody = q('[data-admin-email-requests]');
+  var emailRequestCountEl = q('[data-email-request-count]');
 
   /* 分页与搜索控件 */
   var postSearchEl = q('[data-post-search]');
@@ -105,6 +112,7 @@
   var pendingState = { page: 1, pageSize: 20, total: 0 };
   var reviewedState = { page: 1, pageSize: 20, total: 0 };
   var editState = { page: 1, pageSize: 20, total: 0 };
+  var reportsState = { status: 'open', page: 1, pageSize: 30, total: 0 };
 
   /* 状态徽章：draft / pending / published / rejected */
   var STATUS_META = {
@@ -364,6 +372,10 @@
       else panel.setAttribute('hidden', '');
     });
     if (name === 'audit') loadAudit();
+    if (name === 'reports') {
+      loadReports();
+      loadEmailRequests();
+    }
   }
 
   qa('[data-admin-tab]').forEach(function (btn) {
@@ -383,7 +395,12 @@
     user_delete: '删除用户',
     admin_add: '新增管理员',
     admin_remove: '移除管理员',
-    slugs_sync: '同步文章清单'
+    slugs_sync: '同步文章清单',
+    comment_report_resolved: '举报已处理',
+    comment_report_dismissed: '举报不予处理',
+    email_change_approve: '邮箱变更已完成',
+    email_change_reject: '邮箱变更被驳回',
+    account_delete: '用户注销账号'
   };
 
   /* 审计日志原来写死 100 条（V3）：管理员看不到更早的记录，也没有任何提示。
@@ -482,6 +499,17 @@
     }
   }
 
+  /** 「举报与申请」标签上的待办数 = 待处理举报 + 待处理邮箱申请。 */
+  function setReportsBadge(count) {
+    if (!reportsBadgeEl) return;
+    if (count > 0) {
+      reportsBadgeEl.textContent = String(count);
+      reportsBadgeEl.removeAttribute('hidden');
+    } else {
+      reportsBadgeEl.setAttribute('hidden', '');
+    }
+  }
+
   function loadStats() {
     return api(C.db().rpc('admin_stats'), '概览数据加载失败').then(function (data) {
       var stats = data && typeof data === 'object' ? data : {};
@@ -499,6 +527,9 @@
       setText(q('[data-stat-views]'), Number(stats.views || 0).toLocaleString());
       /* 徽标口径 = 所有等着审核的东西：新投稿 + 改稿 */
       setReviewBadge(Number(stats.pending || 0) + Number(stats.edit_pending || 0));
+      setText(q('[data-stat-open-reports]'), stats.open_reports || 0);
+      setText(q('[data-stat-email-requests]'), stats.email_requests || 0);
+      setReportsBadge(Number(stats.open_reports || 0) + Number(stats.email_requests || 0));
       return stats;
     });
   }
@@ -1408,10 +1439,22 @@
 
     var statusBadge = disabled
       ? '<span class="status-badge status-badge--hidden">已禁用</span>'
-      : '<span class="status-badge status-badge--published">正常</span>';
+      : user.status === 'deleted'
+        ? '<span class="status-badge status-badge--hidden">已注销</span>'
+        : '<span class="status-badge status-badge--published">正常</span>';
     var roleBadge = user.is_admin
       ? '<span class="status-badge status-badge--admin">管理员</span>'
       : '<span class="status-badge">普通用户</span>';
+
+    /* 邮箱状态：是否已验证 + 是否有待站长处理的变更申请（M5 / M9） */
+    var emailCell =
+      (user.email_verified_at
+        ? '<span class="status-badge status-badge--published">已验证</span>'
+        : '<span class="status-badge">未验证</span>') +
+      (user.pending_email
+        ? '<div class="admin-cell__sub">申请改为 <span class="mono">' + esc(user.pending_email) +
+          '</span>（待处理）</div>'
+        : '');
 
     /* 改稿权限：管理员天然具备（函数里 is_admin() 短路），无需再授；授了也没意义 */
     var canPublish = user.can_publish === true;
@@ -1450,6 +1493,7 @@
       (user.is_self ? ' <span class="admin-tag">我</span>' : '') + '</div>' +
       '<div class="admin-cell__sub mono">' + esc(uid) + '</div></div></div></td>' +
       '<td class="admin-cell__sub mono">' + esc(email || '—') + '</td>' +
+      '<td>' + emailCell + '</td>' +
       '<td>' + statusBadge + '</td>' +
       '<td>' + roleBadge + '</td>' +
       '<td>' + publishCell + '</td>' +
@@ -1485,7 +1529,7 @@
       var filtered = usersState.search || usersState.status !== 'all';
       usersBody.innerHTML = list.length
         ? list.map(userRow).join('')
-        : '<tr><td colspan="8" class="admin-empty">' +
+        : '<tr><td colspan="9" class="admin-empty">' +
           (filtered ? '没有匹配的账号。' : '还没有用户注册。') + '</td></tr>';
       bindUserActions(list);
       renderPager(userPagerEl, usersState, loadUsers);
@@ -1662,6 +1706,218 @@
     });
   }
 
+  /* ---------------- 举报与邮箱变更申请（M13 / M5） ----------------
+     两件事放同一个面板：都要站长人工处理，且都有站内通知兜底。
+       · 举报：读者在文章页提交 → 这里处理（已处理 / 不予处理）→ 自动回通知举报人
+       · 邮箱变更：云平台不开放改邮箱接口，用户在个人中心提交申请，
+         站长去云控制台改完再回来点「已完成」，用户会收到通知
+   */
+
+  var REPORT_REASONS = {
+    spam: '垃圾信息',
+    abuse: '辱骂攻击',
+    ad: '广告引流',
+    illegal: '违法违规',
+    offtopic: '与内容无关',
+    other: '其他',
+  };
+
+  var REPORT_STATUS = {
+    open: { label: '待处理', cls: 'status-badge--pending' },
+    resolved: { label: '已处理', cls: 'status-badge--published' },
+    dismissed: { label: '已忽略', cls: 'status-badge--hidden' },
+  };
+
+  function commentSnippet(text) {
+    var value = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    return value.length > 80 ? value.slice(0, 80) + '…' : value;
+  }
+
+  function reportRow(item) {
+    var status = REPORT_STATUS[item.status] || { label: item.status, cls: '' };
+    var actions =
+      item.status === 'open'
+        ? '<button class="btn btn--primary btn--sm" type="button" data-report-resolve="' + item.id +
+          '" data-action="resolved">已处理</button>' +
+          '<button class="btn btn--ghost btn--sm" type="button" data-report-resolve="' + item.id +
+          '" data-action="dismissed">不予处理</button>'
+        : '<span class="admin-cell__sub">' + esc(item.handle_note || '—') + '</span>';
+    return (
+      '<tr data-report-row="' + item.id + '">' +
+      '<td class="admin-cell__sub">' + esc(item.reporter_name || '读者') + '</td>' +
+      '<td><div class="admin-cell__title">' + esc(item.comment_author || '—') + '</div>' +
+      '<div class="admin-cell__sub">' + esc(commentSnippet(item.comment_content)) + '</div>' +
+      (item.post_slug ? '<div class="admin-cell__sub mono">' + esc(item.post_slug) + '</div>' : '') +
+      '</td>' +
+      '<td>' + esc(REPORT_REASONS[item.reason] || item.reason || '其他') +
+      (item.note ? '<div class="admin-cell__sub">' + esc(item.note) + '</div>' : '') + '</td>' +
+      '<td class="admin-cell__sub">' + esc(C.formatDateTime(item.created_at)) + '</td>' +
+      '<td><span class="status-badge ' + status.cls + '">' + esc(status.label) + '</span></td>' +
+      '<td class="admin-cell__actions">' + actions + '</td>' +
+      '</tr>'
+    );
+  }
+
+  function loadReports() {
+    if (!reportsBody) return Promise.resolve(null);
+    return api(
+      C.db().rpc('admin_reports_page', {
+        p_status: reportsState.status === 'all' ? null : reportsState.status,
+        p_limit: reportsState.pageSize,
+        p_offset: (reportsState.page - 1) * reportsState.pageSize,
+      }),
+      '举报列表加载失败'
+    ).then(function (data) {
+      var page = pageRows(data, '举报列表加载失败');
+      var list = page.rows || [];
+      var total = Number(page.total) || 0;
+      var totalPages = Math.max(1, Math.ceil(total / reportsState.pageSize));
+      if (reportsState.page > totalPages) {
+        reportsState.page = totalPages;
+        return loadReports();
+      }
+      reportsState.total = total;
+      setText(reportOpenEl, page.open || 0);
+      setText(q('[data-stat-open-reports]'), page.open || 0);
+      reportsBody.innerHTML = list.length
+        ? list.map(reportRow).join('')
+        : '<tr><td colspan="6" class="admin-empty">' +
+          (reportsState.status === 'open' ? '没有待处理的举报。' : '没有符合条件的举报。') +
+          '</td></tr>';
+      bindReportActions();
+      renderPager(reportPagerEl, reportsState, loadReports);
+      return list;
+    });
+  }
+
+  function bindReportActions() {
+    qa('[data-report-resolve]', reportsBody).forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = Number(btn.getAttribute('data-report-resolve'));
+        var action = btn.getAttribute('data-action');
+        var note = window.prompt(
+          action === 'resolved' ? '处理说明（会发给举报人，可留空）' : '不处理的理由（会发给举报人，可留空）',
+          ''
+        );
+        if (note == null) return;
+        btn.disabled = true;
+        api(
+          C.db().rpc('admin_resolve_report', { p_id: id, p_action: action, p_note: note || null }),
+          '处理失败'
+        )
+          .then(function (data) {
+            if (!data || data.ok !== true) throw new Error((data && data.error) || '处理失败');
+            toast(action === 'resolved' ? '已标记为已处理' : '已标记为不予处理');
+            return Promise.all([loadReports(), loadStats()]);
+          })
+          .catch(function () {
+            btn.disabled = false;
+          });
+      });
+    });
+  }
+
+  qa('[data-report-filter]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      reportsState.status = btn.getAttribute('data-report-filter') || 'open';
+      reportsState.page = 1;
+      qa('[data-report-filter]').forEach(function (other) {
+        other.classList.toggle('is-active', other === btn);
+      });
+      loadReports();
+    });
+  });
+
+  function emailRequestRow(user) {
+    var uid = user.owner_id || '';
+    var name = user.nickname || String(user.email || '').split('@')[0] || '未命名';
+    return (
+      '<tr data-email-request="' + esc(uid) + '">' +
+      '<td><div class="admin-cell__title">' + esc(name) + '</div>' +
+      '<div class="admin-cell__sub mono">' + esc(uid) + '</div></td>' +
+      '<td class="admin-cell__sub mono">' + esc(user.email || '—') + '</td>' +
+      '<td class="admin-cell__sub mono">' + esc(user.pending_email || '—') + '</td>' +
+      '<td class="admin-cell__sub">' + esc(user.pending_email_note || '—') + '</td>' +
+      '<td class="admin-cell__sub">' +
+      esc(user.pending_email_at ? C.formatDateTime(user.pending_email_at) : '—') +
+      '</td>' +
+      '<td class="admin-cell__actions">' +
+      '<button class="btn btn--primary btn--sm" type="button" data-email-approve="' + esc(uid) +
+      '">已完成</button>' +
+      '<button class="btn btn--ghost btn--sm" type="button" data-email-reject="' + esc(uid) +
+      '">驳回</button>' +
+      '</td>' +
+      '</tr>'
+    );
+  }
+
+  /** 申请列表复用用户分页 RPC 的 p_status='email' 口径，不额外写接口。 */
+  function loadEmailRequests() {
+    if (!emailRequestsBody) return Promise.resolve(null);
+    return api(
+      C.db().rpc('admin_users_page', {
+        p_search: null,
+        p_status: 'email',
+        p_limit: 50,
+        p_offset: 0,
+      }),
+      '邮箱变更申请加载失败'
+    ).then(function (data) {
+      var page = pageRows(data, '邮箱变更申请加载失败');
+      var list = page.rows || [];
+      setText(emailRequestCountEl, Number(page.total) || 0);
+      setText(q('[data-stat-email-requests]'), Number(page.total) || 0);
+      emailRequestsBody.innerHTML = list.length
+        ? list.map(emailRequestRow).join('')
+        : '<tr><td colspan="6" class="admin-empty">没有待处理的邮箱变更申请。</td></tr>';
+      bindEmailRequestActions();
+      return list;
+    });
+  }
+
+  function bindEmailRequestActions() {
+    qa('[data-email-approve]', emailRequestsBody).forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var uid = btn.getAttribute('data-email-approve');
+        if (!window.confirm('确认已经在云控制台把该用户的登录邮箱改好了？确定后会通知申请人。')) return;
+        btn.disabled = true;
+        api(
+          C.db().rpc('admin_resolve_email_change', { p_owner: uid, p_action: 'approve', p_note: null }),
+          '处理失败'
+        )
+          .then(function (data) {
+            if (!data || data.ok !== true) throw new Error((data && data.error) || '处理失败');
+            toast('已标记为完成，申请人会收到通知');
+            return Promise.all([loadEmailRequests(), loadUsers(), loadStats()]);
+          })
+          .catch(function () {
+            btn.disabled = false;
+          });
+      });
+    });
+
+    qa('[data-email-reject]', emailRequestsBody).forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var uid = btn.getAttribute('data-email-reject');
+        var note = window.prompt('驳回理由（会发给申请人，可留空）', '');
+        if (note == null) return;
+        btn.disabled = true;
+        api(
+          C.db().rpc('admin_resolve_email_change', { p_owner: uid, p_action: 'reject', p_note: note || null }),
+          '处理失败'
+        )
+          .then(function (data) {
+            if (!data || data.ok !== true) throw new Error((data && data.error) || '处理失败');
+            toast('已驳回，申请人会收到通知');
+            return Promise.all([loadEmailRequests(), loadUsers(), loadStats()]);
+          })
+          .catch(function () {
+            btn.disabled = false;
+          });
+      });
+    });
+  }
+
   /* ---------------- 统一刷新 ---------------- */
 
   function refreshAll() {
@@ -1673,6 +1929,8 @@
       loadCommentWords(),
       loadUsers(),
       loadEmails(),
+      loadReports(),
+      loadEmailRequests(),
     ]);
   }
 

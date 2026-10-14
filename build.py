@@ -114,6 +114,8 @@ ASSET_SCRIPTS = (
     "admin.js",
     "cloud-posts.js",
     "upload.js",
+    "avatar-crop.js",
+    "onboard.js",
     "subscribe.js",
 )
 
@@ -734,7 +736,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 root="",
                 current="",
                 cloud=True,
-                scripts=["upload.js", "account.js"],
+                scripts=["upload.js", "avatar-crop.js", "account.js"],
                 content=account_page(config=config, root=""),
             ),
         )
@@ -803,7 +805,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
                 current="posts.html",
                 cloud=True,
                 vendor=["marked", "highlight"],
-                scripts=["math.js", "cloud-markdown.js", "cloud-posts.js"],
+                scripts=["math.js", "cloud-markdown.js", "cloud-posts.js", "interact.js"],
                 content=cloud_post_page(config=config, root=""),
             ),
         )

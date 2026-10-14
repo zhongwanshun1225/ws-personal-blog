@@ -580,6 +580,9 @@ def layout(
         script_tags.append(f'<script src="{root}assets/cloud.js" defer></script>')
         script_tags.append(f'<script src="{root}assets/notify.js" defer></script>')
     script_tags.append(f'<script src="{root}assets/app.js" defer></script>')
+    # 完善资料引导（M15）：依赖 app.js 提供的 __wsT 与 cloud.js 的会话状态，
+    # 未登录或资料已填时直接返回，所以放在全局脚本层没有额外开销。
+    script_tags.append(f'<script src="{root}assets/onboard.js" defer></script>')
     for name in scripts or []:
         script_tags.append(f'<script src="{root}assets/{esc(name)}" defer></script>')
     scripts_html = "\n".join(script_tags)
