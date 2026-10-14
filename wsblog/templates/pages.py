@@ -2090,13 +2090,19 @@ def cloud_posts_page(*, config: dict, root: str = "") -> str:
 
 def cloud_post_page(*, config: dict, root: str = "") -> str:
     lang = _lang(config)
+    # 云文章标题要等客户端拿到文章才有，这里先留一个空节点由 cloud-posts.js 回填。
+    # ⚠️ 下面这段注释不能写进 f-string 的表达式里：Python < 3.12 不允许表达式内含 '#'，
+    #    而部署沙箱的 Python 版本比本地低（本地 3.13 能过、沙箱直接 SyntaxError）。
+    crumb_extra = (
+        '<span class="breadcrumb__sep">/</span>'
+        '<span aria-current="page" data-cloud-crumb hidden></span>'
+    )
     return f"""<div class="wrap" data-cloud-post>
   <div class="page-head">
     {breadcrumb_nav(
         [_crumb_home(config), (T("cloudPosts.title", lang), "posts.html", "cloudPosts.title")],
         root=root,
-        # 标题要等客户端拿到文章才有，这里先留一个空节点由 cloud-posts.js 填
-        extra='<span class="breadcrumb__sep">/</span><span aria-current="page" data-cloud-crumb hidden></span>',
+        extra=crumb_extra,
     )}
     <header class="article-head" data-cloud-head>
       <span class="eyebrow">Online</span>
