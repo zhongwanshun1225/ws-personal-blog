@@ -781,8 +781,19 @@
     }
   }
 
+  /* 被闲置超时登出后跳回本页时，说明原因（原因标记由 idle.js 写入并随即消费掉） */
+  function checkIdleLogout() {
+    if (!(window.WSBlogIdle && typeof window.WSBlogIdle.takeRedirectReason === 'function')) return;
+    if (window.WSBlogIdle.takeRedirectReason() === 'idle') {
+      showNotice(
+        (window.WSBlogI18n && window.WSBlogI18n.t) ? window.WSBlogI18n.t('idle.loggedOut') : '你已 5 分钟没有操作，已自动退出登录。'
+      );
+    }
+  }
+
   applyMethod('password');
   checkOrigin();
+  checkIdleLogout();
   bindSignedIn();
   renderOAuth();
 

@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  var VERSION = 'wsblog-v5';
+  var VERSION = 'wsblog-v6';
   var SCOPE_URL = new URL(self.registration.scope);
   var ROOT = SCOPE_URL.pathname;
 
@@ -28,6 +28,7 @@
     ROOT + 'assets/app.js',
     ROOT + 'assets/banner.js',
     ROOT + 'assets/analytics.js',
+    ROOT + 'assets/idle.js',
     ROOT + 'assets/onboard.js',
     ROOT + 'offline.html',
   ];

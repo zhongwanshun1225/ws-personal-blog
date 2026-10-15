@@ -541,8 +541,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Privacy: only your email and language preference are stored. No IP logging, no third-party sharing.",
     },
 
-    # ---------- 法律文书页（L1：隐私政策；L2 的用户协议复用同一套键） ----------
-    "legal.privacy": {"zh-CN": "隐私政策", "en": "Privacy Policy"},
+    # ---------- 登录态闲置超时 ----------
+    "idle.continue": {"zh-CN": "继续使用", "en": "Stay signed in"},
+    "idle.loggedOut": {"zh-CN": "你已 5 分钟没有操作，已自动退出登录。", "en": "You were signed out after 5 minutes of inactivity."},
+
+    # ---------- 法律文书页（L1：隐私政策；L2 的用户协议复用同一套键） ----------    "legal.privacy": {"zh-CN": "隐私政策", "en": "Privacy Policy"},
     "legal.terms": {"zh-CN": "用户协议", "en": "Terms of Service"},
     "legal.updated": {"zh-CN": "最后更新：{date}", "en": "Last updated: {date}"},
 

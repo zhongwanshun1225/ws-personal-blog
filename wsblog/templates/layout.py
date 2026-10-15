@@ -517,6 +517,7 @@ def layout(
     social_html = render_social(config.get("social") or [])
 
     body_attr = f' class="{esc(body_class)}"' if body_class else ""
+    idle_continue = esc(T("idle.continue", lang))
     progress_html = '<div class="read-progress" id="readProgress"></div>' if show_progress else ""
     brand_initial = esc(str(site_title).strip()[:1].upper())
 
@@ -638,6 +639,9 @@ def layout(
             script_tags.append(f'<script src="{_vendor_src(sdk)}" defer></script>')
         script_tags.append(f'<script src="{root}assets/cloud.js" defer></script>')
         script_tags.append(f'<script src="{root}assets/notify.js" defer></script>')
+        # 登录态闲置超时：依赖 cloud.js 的 currentUser/signOut/booted，
+        # 必须在它之后加载；只在已登录时计时，脚本内部自判。
+        script_tags.append(f'<script src="{root}assets/idle.js" defer></script>')
     script_tags.append(f'<script src="{root}assets/app.js" defer></script>')
     # 公告条 / 维护模式（B15）：构建期已烘一份兜底，这里再用 settings_public()
     # 实时校正一次，站长改完不必等重建。放在 app.js 之后、页面专属脚本之前。
@@ -762,6 +766,15 @@ def layout(
 </div>
 
 <div class="toast" data-toast role="status" aria-live="polite"></div>
+
+<!-- 闲置登出警告：只在已登录且接近 5 分钟未操作时由 idle.js 显示 -->
+<div class="idle-warn" data-idle-warn data-show="false" aria-hidden="true" role="alertdialog">
+  <div class="idle-warn__inner">
+    <span class="idle-warn__text" data-idle-text></span>
+    <button class="btn btn--sm" type="button" data-idle-continue
+            data-i18n="idle.continue">{idle_continue}</button>
+  </div>
+</div>
 {maintenance_html}
 {scripts_html}
 </body>

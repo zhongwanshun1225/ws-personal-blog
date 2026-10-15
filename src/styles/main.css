@@ -2177,6 +2177,47 @@ a.tag:hover {
   gap: 8px;
 }
 
+/* ---------- 闲置登出警告 ---------- */
+.idle-warn {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translate(-50%, 140%);
+  z-index: 90;
+  max-width: min(560px, calc(100vw - 32px));
+  transition: transform 0.28s ease;
+}
+
+.idle-warn[data-show] {
+  transform: translate(-50%, 0);
+}
+
+.idle-warn__inner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--surface, #fff);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.idle-warn__text {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 560px) {
+  .idle-warn__inner {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+  }
+}
+
 /* ---------- 15 交互组件 ---------- */
 .to-top {
   position: fixed;

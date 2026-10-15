@@ -116,6 +116,7 @@ ASSET_SCRIPTS = (
     "math.js",
     "cloud.js",
     "notify.js",
+    "idle.js",         # 登录态闲置 5 分钟自动退出（全局）
     "cloud-markdown.js",
     "auth.js",
     "interact.js",
