@@ -27,6 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from wsblog import cloudcache
 from wsblog.util import parse_date
 
 __all__ = [
@@ -65,6 +66,12 @@ def _urlopen(request: urllib.request.Request, timeout: float):
 
 def _get_json(base: str, resource: str, query: dict, publishable_key: str, timeout: float):
     url = f"{base.rstrip('/')}/{resource}?{urllib.parse.urlencode(query)}"
+
+    # E4：构建期云端响应缓存（TTL 5 分钟），命中则完全不发请求。
+    cached = cloudcache.get(url)
+    if cached is not None:
+        return cached if isinstance(cached, list) else None
+
     request = urllib.request.Request(
         url,
         headers={
@@ -80,7 +87,10 @@ def _get_json(base: str, resource: str, query: dict, publishable_key: str, timeo
         reason = getattr(exc, "reason", None) or exc
         print(f"· 云端 {resource} 拉取失败，本次构建按 0 处理（{reason}）")
         return None
-    return payload if isinstance(payload, list) else None
+    if isinstance(payload, list):
+        cloudcache.put(url, payload)
+        return payload
+    return None
 
 
 def _to_int(value) -> int:

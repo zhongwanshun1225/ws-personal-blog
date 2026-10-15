@@ -34,6 +34,9 @@ const SUITES = [
    * 放在这里是因为它覆盖的「三态判定 / 签名派生」都是写错了也不会报错的静默 bug。 */
   'ws-backup-test.mjs',
   'backup-panel-test.mjs',
+  /* E4 构建缓存：纯文件系统 + 源码契约，不需要浏览器。
+   * 放这里的理由是它的失败模式极隐蔽 —— 缓存写错不会报错，只会少写文件。 */
+  'build-cache-test.mjs',
   'batch3-smoke.mjs',
   'batch3-notify-render.mjs',
   'batch4-smoke.mjs',

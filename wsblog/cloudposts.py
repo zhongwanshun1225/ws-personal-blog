@@ -30,6 +30,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from wsblog import cloudcache
 from wsblog.markdown import render_markdown
 from wsblog.util import parse_date, reading_time
 
@@ -160,21 +161,29 @@ def fetch_published_cloud_posts(
                     "updated_at,content_md,author_id"),
          "order": "published_at.desc"}
     )
-    request = urllib.request.Request(
-        f"{base}?{query}",
-        headers={
-            "x-wb-webapp-access-key": publishable_key,
-            "Accept": "application/json",
-            "User-Agent": "wsblog-builder/1.0",
-        },
-    )
-    try:
-        with _urlopen(request, timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        reason = getattr(exc, "reason", None) or exc
-        print(f"· 云端文章拉取失败，本次构建不合并在线文章（{reason}）")
-        return []
+    url = f"{base}?{query}"
+
+    # E4：构建期云端响应缓存。命中时完全不发请求（本地边写边预览的场景下省下大头耗时）。
+    cached = cloudcache.get(url)
+    if cached is not None:
+        payload = cached
+    else:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "x-wb-webapp-access-key": publishable_key,
+                "Accept": "application/json",
+                "User-Agent": "wsblog-builder/1.0",
+            },
+        )
+        try:
+            with _urlopen(request, timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            reason = getattr(exc, "reason", None) or exc
+            print(f"· 云端文章拉取失败，本次构建不合并在线文章（{reason}）")
+            return []
+        cloudcache.put(url, payload)
 
     if not isinstance(payload, list):
         print(f"· 云端文章返回格式异常，忽略（{type(payload).__name__}）")
@@ -203,21 +212,28 @@ def fetch_public_profiles(
 
     base = site_origin.rstrip("/") + "/.cloud/database/rest/profiles_public"
     query = urllib.parse.urlencode({"select": "owner_id,nickname,avatar_url,bio"})
-    request = urllib.request.Request(
-        f"{base}?{query}",
-        headers={
-            "x-wb-webapp-access-key": publishable_key,
-            "Accept": "application/json",
-            "User-Agent": "wsblog-builder/1.0",
-        },
-    )
-    try:
-        with _urlopen(request, timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        reason = getattr(exc, "reason", None) or exc
-        print(f"· 公开资料拉取失败，本次构建不带作者信息（{reason}）")
-        return {}
+    url = f"{base}?{query}"
+
+    cached = cloudcache.get(url)
+    if cached is not None:
+        payload = cached
+    else:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "x-wb-webapp-access-key": publishable_key,
+                "Accept": "application/json",
+                "User-Agent": "wsblog-builder/1.0",
+            },
+        )
+        try:
+            with _urlopen(request, timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            reason = getattr(exc, "reason", None) or exc
+            print(f"· 公开资料拉取失败，本次构建不带作者信息（{reason}）")
+            return {}
+        cloudcache.put(url, payload)
 
     if not isinstance(payload, list):
         print(f"· 公开资料返回格式异常，忽略（{type(payload).__name__}）")

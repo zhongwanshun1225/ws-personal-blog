@@ -35,6 +35,24 @@ jobs:
         with:
           node-version: "22"
 
+      # E4 构建缓存：CI 是**全新 runner**，构建期云端响应缓存（.preview/cache/cloud/）
+      # 本来每次都要重新打 6 个接口。这里把它跨 run 复用，省掉这些网络往返。
+      #
+      # key 的两个分量各有用处：
+      #   · hashFiles('content/**','site.config.json','cloud.config.json','wsblog/**','build.py')
+      #     —— 内容或构建逻辑变了就换 key，绝不会拿旧缓存配新代码（安全性靠这个）；
+      #   · run_id —— 保证每次都能写入一份新缓存，否则 restore-keys 命中后
+      #     Actions 因「key 已存在」而拒绝保存更新后的缓存，缓存会永远停在第一次。
+      # TTL 由 cloudcache 自己控制（默认 5 分钟）：即便命中了旧缓存，
+      # 超过 TTL 也会自动重新拉取，所以这里不需要额外的失效逻辑。
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: .preview/cache/cloud
+          key: wsblog-cloud-${{ hashFiles('content/**', 'site.config.json', 'cloud.config.json', 'wsblog/**', 'build.py') }}-${{ github.run_id }}
+          restore-keys: |
+            wsblog-cloud-
+
       - name: Build site
         run: python build.py --clean
 

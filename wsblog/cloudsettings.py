@@ -23,6 +23,8 @@ import json
 import urllib.error
 import urllib.request
 
+from wsblog import cloudcache
+
 __all__ = [
     "fetch_public_settings",
     "publish_due_posts",
@@ -49,10 +51,21 @@ def _rpc(
     payload: dict,
     timeout: float = 8.0,
 ):
-    """调一个 PostgREST 风格的 RPC，返回解析后的 JSON；失败返回 None。"""
+    """调一个 PostgREST 风格的 RPC，返回解析后的 JSON；失败返回 None。
+
+    E4：构建期走 ``cloudcache``（按「端点 + 入参」缓存 5 分钟）。
+    构建器无法感知云端何时被改，TTL 是这里唯一诚实的选择；
+    ``--no-cloud-cache`` 或删 ``.preview/cache/cloud/`` 可强制直连。
+    """
     if not site_origin or not publishable_key:
         return None
     url = f"{site_origin.rstrip('/')}/.cloud/database/rest/rpc/{name}"
+    cache_key = f"POST {url} {json.dumps(payload or {}, sort_keys=True, ensure_ascii=False)}"
+
+    cached = cloudcache.get(cache_key)
+    if cached is not None:
+        return cached
+
     body = json.dumps(payload or {}).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -67,9 +80,11 @@ def _rpc(
     )
     try:
         with _urlopen(request, timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return None
+    cloudcache.put(cache_key, result)
+    return result
 
 
 def fetch_public_settings(

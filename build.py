@@ -35,6 +35,7 @@ for stream in (sys.stdout, sys.stderr):
         except (ValueError, OSError):
             pass
 
+from wsblog import cloudcache  # noqa: E402
 from wsblog.cloudconf import (  # noqa: E402
     build_cloud_config_js,
     cloud_enabled,
@@ -145,6 +146,28 @@ nested_anchor_issues: list[str] = []
 
 _prepared_dirs: set[str] = set()
 
+# --- 构建产物缓存（E4）-----------------------------------------------------
+# 思路：写入前先比对本地产物。内容逐字节相同 → 跳过落盘（省一次 write）；
+# 但 HTML 仍要走 check_nested_anchors —— 校验的是「源码有没有嵌套锚点」，
+# 与内容是否变过无关，跳过校验会让一次缓存命中掩盖住新引入的缺陷。
+#
+# 为什么不做「按源文件 mtime 跳过整页渲染」那种大缓存：本站全量构建约 20s，
+# 其中大头是云端拉取与模板渲染，但按 mtime 判断依赖会把「改了一处 CSS 影响全站」
+# 这类跨文件依赖判错，得引入完整的依赖图才安全。收益不抵复杂度。
+# 这里只做**写入层去重**：行为可预测、零依赖图、对增量与全量构建都安全。
+_write_stats = {"written": 0, "skipped": 0, "bytes_saved": 0}
+# 指纹集合：记录本次构建「应该存在」的产物路径，供 --clean 之外的陈旧产物清理参考。
+_emitted_paths: set[str] = set()
+
+
+def read_if_exists(path: str) -> str | None:
+    """读已有的产物内容；不存在或读不动都返回 None（当缓存未命中处理）。"""
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as handle:
+            return handle.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
 
 def ensure_dir(directory: str) -> None:
     """建目录并记住结果，避免每个文件都重复一次系统调用。"""
@@ -156,9 +179,19 @@ def ensure_dir(directory: str) -> None:
 
 def write(rel_path: str, content: str) -> str:
     target = os.path.join(DIST_DIR, rel_path)
-    ensure_dir(os.path.dirname(target))
-    with open(target, "w", encoding="utf-8", newline="") as handle:
-        handle.write(content)
+    _emitted_paths.add(rel_path)
+
+    # 内容未变则跳过落盘（E4）。注意：即便跳过，下面的锚点校验仍要跑。
+    existing = read_if_exists(target)
+    if existing is not None and existing == content:
+        _write_stats["skipped"] += 1
+        _write_stats["bytes_saved"] += len(content.encode("utf-8"))
+    else:
+        ensure_dir(os.path.dirname(target))
+        with open(target, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+        _write_stats["written"] += 1
+
     if rel_path.endswith(".html"):
         check_nested_anchors(rel_path, content)
     return target
@@ -166,9 +199,37 @@ def write(rel_path: str, content: str) -> str:
 
 def copy_file(source: str, rel_path: str) -> str:
     target = os.path.join(DIST_DIR, rel_path)
+    _emitted_paths.add(rel_path)
+
+    # 静态资源同理：大小一致且内容逐字节相同就跳过（避免刷新 mtime、触发无谓的产物变更）。
+    try:
+        if os.path.getsize(source) == os.path.getsize(target):
+            with open(source, "rb") as src, open(target, "rb") as dst:
+                if src.read() == dst.read():
+                    _write_stats["skipped"] += 1
+                    _write_stats["bytes_saved"] += os.path.getsize(source)
+                    return target
+    except OSError:
+        pass
+
     ensure_dir(os.path.dirname(target))
     shutil.copyfile(source, target)
+    _write_stats["written"] += 1
     return target
+
+
+def report_write_stats() -> None:
+    """打印缓存命中情况。只在有命中时输出，避免全量构建时刷无意义的噪音。"""
+    skipped = _write_stats["skipped"]
+    if not skipped:
+        return
+    saved_kb = _write_stats["bytes_saved"] / 1024
+    total = skipped + _write_stats["written"]
+    pct = (skipped / total * 100) if total else 0
+    print(
+        f"· 产物缓存：{skipped}/{total} 个文件内容未变、跳过落盘"
+        f"（{pct:.0f}%，省 {saved_kb:.0f} KB 写入）"
+    )
 
 
 def read_config() -> dict:
@@ -1134,6 +1195,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         print(f"· 作者主页 {len(authors)} 个（有已发布文章的作者）")
     print(f"· 页面 {page_count} 个")
     print(f"· 云能力 {'已接入（登录 / 评论 / 后台）' if cloud else '未接入（纯静态）'}")
+    cloudcache.report()   # E4：有云端缓存命中才打印
+    report_write_stats()  # E4：有产物缓存命中才打印
     print(f"✓ 构建完成，用时 {elapsed_ms}ms → {os.path.relpath(DIST_DIR, os.getcwd())}")
 
     return {
@@ -1363,6 +1426,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="预览服务器绑定地址（默认 127.0.0.1，云端部署用 0.0.0.0）")
     parser.add_argument("--drafts", action="store_true", help="连草稿一起生成")
     parser.add_argument("--clean", action="store_true", help="先清空 dist/ 再生成")
+    parser.add_argument("--no-cloud-cache", action="store_true",
+                        help="本次构建直连云端，不用/不写构建期响应缓存（E4）")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 4173)), help="预览端口（默认 4173）")
     return parser.parse_args(argv)
 
@@ -1375,6 +1440,18 @@ def main(argv=None) -> int:
         return scaffold(parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
 
     include_drafts = args.drafts or args.serve
+
+    # E4：--no-cloud-cache 时置环境变量，cloudcache 会整体失效。
+    # 用环境变量而不是传参，是因为缓存被 cloudposts / cloudsettings / cloudstats
+    # 三个模块共用，逐个透传参数会污染它们的函数签名。
+    if args.no_cloud_cache:
+        os.environ["WSBLOG_NO_CLOUD_CACHE"] = "1"
+
+    # E4：`--serve` 是发布沙箱（sites_deploy 的 startCmd）用的启动方式，产物直接面向线上。
+    # 本地 .preview/cache/cloud/ 会被 sites_deploy 一起打进沙箱，若不拦住，
+    # 沙箱内的首次构建就会命中「本地上传那一刻的云端数据」，把陈旧数据烘进线上产物。
+    if args.serve:
+        cloudcache.mark_serve_mode()
 
     # 首次运行时，如果 content/ 不存在就建好骨架，避免报错
     for name in ("posts", "projects", "pages"):
