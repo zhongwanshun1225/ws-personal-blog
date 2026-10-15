@@ -171,6 +171,8 @@ def load_page(content_dir: str, name: str):
     return {
         "title": str(data["title"]) if data.get("title") else name,
         "subtitle": str(data["subtitle"]) if data.get("subtitle") else "",
+        # 法律文书页（隐私政策等）用 updated 标「最后更新」，其余页面没有这个字段就是空串。
+        "updated": str(data["updated"]) if data.get("updated") else "",
         "html": rendered["html"],
         "toc": rendered["toc"],
         "has_math": rendered.get("has_math", False),

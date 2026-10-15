@@ -541,6 +541,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Privacy: only your email and language preference are stored. No IP logging, no third-party sharing.",
     },
 
+    # ---------- 法律文书页（L1：隐私政策；L2 的用户协议复用同一套键） ----------
+    "legal.privacy": {"zh-CN": "隐私政策", "en": "Privacy Policy"},
+    "legal.terms": {"zh-CN": "用户协议", "en": "Terms of Service"},
+    "legal.updated": {"zh-CN": "最后更新：{date}", "en": "Last updated: {date}"},
+
     # ---------- 快捷键页 ----------
     "shortcuts.title": {"zh-CN": "快捷键", "en": "Keyboard shortcuts"},
     "shortcuts.lead": {"zh-CN": "全站可用的键盘操作，不用离开键盘。", "en": "Everything you can do without leaving the keyboard."},

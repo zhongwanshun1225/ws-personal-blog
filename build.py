@@ -78,6 +78,7 @@ from wsblog.templates.pages import (  # noqa: E402
     cloud_post_page,
     cloud_posts_page,
     home_page,
+    legal_page,
     login_page,
     not_found_page,
     notifications_page,
@@ -348,6 +349,8 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
     tags = collect_tags(all_posts)
     series = collect_series(all_posts)
     about_data = load_page(CONTENT_DIR, "about")
+    # 隐私政策（L1）：正文全在 content/pages/privacy.md，改政策不用碰代码。
+    privacy_data = load_page(CONTENT_DIR, "privacy")
 
     options = config.get("options") or {}
 
@@ -400,6 +403,14 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             for post in all_posts
         ],
     }
+
+    # 页脚固定链接（隐私政策等）。必须在**任何页面写出之前**设好 ——
+    # layout() 是逐页读 config 的，写在首页之后就只有后面那些页能拿到。
+    # label_key 指向 i18n 键，构不出来就不加，避免死链。
+    if privacy_data:
+        config.setdefault("footer", {})["links"] = [
+            {"label_key": "legal.privacy", "url": "privacy.html"},
+        ]
 
     # --- 首页 ---
     write(
@@ -476,6 +487,25 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
             content=about_page(config=config, page=about_data, root=""),
         ),
     )
+
+    # --- 隐私政策（L1，纯静态内容页）---
+    if privacy_data:
+        write(
+            "privacy.html",
+            layout(
+                config=config,
+                title=T("legal.privacy", lang),
+                description=privacy_data.get("subtitle") or f"{T('legal.privacy', lang)} · {config.get('title') or ''}",
+                root="",
+                current="privacy.html",
+                canonical="/privacy.html",
+                cloud=cloud,
+                content=legal_page(config=config, page=privacy_data, root=""),
+            ),
+        )
+        privacy_url = "/privacy.html"
+    else:
+        privacy_url = ""
 
     # --- 归档页（分页：archive.html / archive-2.html …）---
     for index, chunk in enumerate(archive_pages):
@@ -1031,7 +1061,7 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
 
     # --- RSS / sitemap / robots ---
     write("feed.xml", build_feed(config, all_posts))
-    write("sitemap.xml", build_sitemap(config, posts=all_posts, projects=projects, tags=tags, archive_pages=archive_total_pages, authors=authors))
+    write("sitemap.xml", build_sitemap(config, posts=all_posts, projects=projects, tags=tags, archive_pages=archive_total_pages, authors=authors, legal_pages=(["privacy"] if privacy_data else [])))
     robots = "User-agent: *\nAllow: /\n"
     if config.get("url"):
         robots += f"Sitemap: {str(config['url']).rstrip('/')}/sitemap.xml\n"
@@ -1082,9 +1112,10 @@ def build(include_drafts: bool = False, clean: bool = False) -> dict:
         ),
     )
 
-    # 核心页（首页 / 项目 / 关于 / 标签 / 404）+ 归档各页 + 文章 / 项目 / 标签 / 作者详情 + 云端页面
+    # 核心页（首页 / 项目 / 关于 / 标签 / 404）+ 合规页 + 归档各页 + 文章 / 项目 / 标签 / 作者详情 + 云端页面
     page_count = (
         5
+        + (1 if privacy_data else 0)
         + archive_total_pages
         + len(all_posts)
         + len(projects)
@@ -1182,7 +1213,7 @@ def build_feed(config: dict, posts: list) -> str:
 
 # ---------------- sitemap ----------------
 
-def build_sitemap(config: dict, *, posts: list, projects: list, tags: list, archive_pages: int = 1, authors: list | None = None) -> str:
+def build_sitemap(config: dict, *, posts: list, projects: list, tags: list, archive_pages: int = 1, authors: list | None = None, legal_pages: list | None = None) -> str:
     site = str(config.get("url") or "https://example.com").rstrip("/")
     urls = [
         {"loc": "/", "priority": "1.0"},
@@ -1191,6 +1222,8 @@ def build_sitemap(config: dict, *, posts: list, projects: list, tags: list, arch
         {"loc": "/tags.html", "priority": "0.6"},
         {"loc": "/about.html", "priority": "0.6"},
     ]
+    # 合规页（隐私政策等）收进 sitemap，但优先级低 —— 它不需要和文章抢抓取预算。
+    urls += [{"loc": f"/{name}.html", "priority": "0.3"} for name in (legal_pages or [])]
     urls += [
         {"loc": f"/{page_url('archive.html', n)}", "priority": "0.4"}
         for n in range(2, max(1, archive_pages) + 1)

@@ -498,6 +498,22 @@ def layout(
     note_attr = i18n_config_attr({"zh-CN": note_text, "en": note_en}, note_text)
     footer_note = f' · <span{note_attr}>{esc(note_text)}</span>' if note_text else ""
     icp_block = f'<div>{esc(footer.get("icp"))}</div>' if footer.get("icp") else ""
+    # 页脚固定链接（隐私政策等）。label_key 是有 i18n 的键名，label 是直接文字，
+    # 两种都支持 —— 这样法律页文案能跟着界面语言切换。
+    link_parts = []
+    for item in footer.get("links") or []:
+        if not isinstance(item, dict):
+            continue
+        href = str(item.get("url") or "").strip()
+        key = str(item.get("label_key") or "").strip()
+        label = T(key, lang) if key else str(item.get("label") or "").strip()
+        if not href or not label:
+            continue
+        attr = f' data-i18n="{esc(key)}"' if key else ""
+        link_parts.append(f'<a class="site-footer__link" href="{esc(href)}"{attr}>{esc(label)}</a>')
+    legal_links_html = (
+        f'<div class="site-footer__links">{"".join(link_parts)}</div>' if link_parts else ""
+    )
     social_html = render_social(config.get("social") or [])
 
     body_attr = f' class="{esc(body_class)}"' if body_class else ""
@@ -716,6 +732,7 @@ def layout(
     <div class="site-footer__left">
       <div>© {year_text} {author}{footer_note}</div>
       {icp_block}
+      {legal_links_html}
     </div>
     <div class="site-footer__right">{social_html}</div>
   </div>

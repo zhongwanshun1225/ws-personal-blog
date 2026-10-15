@@ -2132,6 +2132,46 @@ a.tag:hover {
   color: var(--accent);
 }
 
+/* 页脚法律链接（隐私政策等）：与上一行拉开一点距离，中间用间隔点分隔 */
+.site-footer__links {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.site-footer__links .site-footer__link + .site-footer__link::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--text-faint);
+}
+
+.site-footer__link {
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+.site-footer__link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* 法律文书页（隐私政策）：正文限宽更窄，段间留白更大，便于阅读长文 */
+.legal-doc {
+  max-width: 720px;
+}
+
+.legal__updated {
+  margin-top: 10px;
+  font-size: 0.82rem;
+  color: var(--text-faint);
+}
+
+.legal-doc table {
+  font-size: 0.9rem;
+}
+
 .site-footer__right {
   display: flex;
   gap: 8px;

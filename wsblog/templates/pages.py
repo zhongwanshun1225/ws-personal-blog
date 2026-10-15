@@ -21,6 +21,7 @@ __all__ = [
     "projects_page",
     "project_detail_page",
     "about_page",
+    "legal_page",
     "tags_page",
     "tag_page",
     "series_index_page",
@@ -784,6 +785,53 @@ def about_page(*, config: dict, page, root: str = "") -> str:
   {skills}
   {timeline}
   {social_block}
+</div>"""
+
+
+# ---------- 法律文书页（隐私政策 / 用户协议等） ----------
+
+def legal_page(
+    *,
+    config: dict,
+    page,
+    root: str = "",
+    eyebrow: str = "Legal",
+) -> str:
+    """法律文书页。
+
+    与 ``about_page`` 的区别：只渲染「标题 + 副标题 + 最后更新 + 正文」，
+    不带个人主页那套 hero / 技能 / 社交块 —— **文案全部来自 Markdown**，
+    改政策只动 ``content/pages/*.md``，不用碰代码。
+    """
+    lang = _lang(config)
+    data = page or {}
+    title = str(data.get("title") or T("legal.privacy", lang))
+    subtitle = str(data.get("subtitle") or "")
+    updated = str(data.get("updated") or "")
+    body = data.get("html") or ""
+
+    subtitle_html = (
+        f'<p class="article-head__summary" style="margin-top:18px">{esc(subtitle)}</p>'
+        if subtitle
+        else ""
+    )
+    # 更新日期随语言切换（日期本身是 ISO 格式，两种语言都直读，不做本地化）。
+    updated_html = (
+        f'<p class="legal__updated" data-i18n="legal.updated"'
+        f' data-i18n-args=\'{{"date":"{esc(updated)}"}}\'>{esc(T("legal.updated", lang, date=updated))}</p>'
+        if updated
+        else ""
+    )
+
+    return f"""<div class="wrap">
+  <div class="page-head">
+    {breadcrumb_nav([_crumb_home(config), (title, None)], root=root)}
+    <span class="eyebrow">{esc(eyebrow)}</span>
+    <h1 class="article-head__title" style="margin-top:14px">{esc(title)}</h1>
+    {subtitle_html}
+    {updated_html}
+  </div>
+  <article class="prose legal-doc">{body}</article>
 </div>"""
 
 
