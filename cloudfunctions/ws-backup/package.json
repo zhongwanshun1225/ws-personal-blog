@@ -1,0 +1,7 @@
+{
+  "name": "ws-backup",
+  "version": "1.0.0",
+  "description": "WS Blog 定时备份 worker：按策略导出全量 JSON，本站留一份并投递到站外（Webhook / S3），超份数自动裁剪（缺口 B5）",
+  "main": "index.js",
+  "dependencies": {}
+}

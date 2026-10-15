@@ -2833,6 +2833,65 @@ def admin_page(*, config: dict, root: str = "") -> str:
       </div>
       <div class="admin-pager" data-backup-pager></div>
     </div>
+
+    <!-- ---------------- 自动备份 + 异地留存（B5） ---------------- -->
+    <div class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">自动备份</h2>
+        <div class="panel__head-actions">
+          <span class="panel__hint" data-backup-status-time></span>
+          <button class="btn btn--ghost btn--sm" type="button" data-backup-refresh>刷新</button>
+        </div>
+      </div>
+
+      <div class="backup-state" data-backup-state>
+        <div class="admin-empty">加载中…</div>
+      </div>
+
+      <div class="admin-toolbar admin-toolbar--wrap">
+        <label class="field field--inline">
+          <span class="field__label">自动备份</span>
+          <select class="field__input field__input--select" data-backup-enabled>
+            <option value="true">开启</option>
+            <option value="false">关闭</option>
+          </select>
+        </label>
+        <label class="field field--inline">
+          <span class="field__label">每天执行于</span>
+          <select class="field__input field__input--select" data-backup-hour></select>
+        </label>
+        <label class="field field--inline">
+          <span class="field__label">导出范围</span>
+          <select class="field__input field__input--select" data-backup-kind>
+            <option value="all">全部</option>
+            <option value="posts">文章</option>
+            <option value="comments">评论</option>
+            <option value="users">用户</option>
+            <option value="interactions">互动</option>
+            <option value="admin">审计 + 设置</option>
+          </select>
+        </label>
+        <label class="field field--inline">
+          <span class="field__label">保留份数</span>
+          <select class="field__input field__input--select" data-backup-keep></select>
+        </label>
+        <label class="field field--inline">
+          <span class="field__label">异地留存</span>
+          <select class="field__input field__input--select" data-backup-offsite>
+            <option value="off">不启用</option>
+            <option value="webhook">Webhook</option>
+            <option value="s3">S3 兼容存储</option>
+          </select>
+        </label>
+        <button class="btn btn--primary btn--sm" type="button" data-backup-save>保存策略</button>
+      </div>
+
+      <p class="admin-hint-line">
+        定时任务由云函数 <code>ws-backup</code> 每天执行（本机没有 <code>pg_cron</code>，只能靠云函数的定时触发器）。
+        它用共享密钥调用 <code>backup_export()</code> 导出全量 JSON，再按上面的「异地留存」投递到站外。
+      </p>
+      <p class="admin-hint-line admin-hint-line--warn" data-backup-warn hidden></p>
+    </div>
   </section>
 
   <!-- ==================== 安全与健康（B13 / B14） ==================== -->

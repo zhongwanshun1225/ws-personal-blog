@@ -6523,6 +6523,106 @@ body.is-modal-open {
   color: var(--text-faint);
 }
 
+.admin-hint-line--warn {
+  color: var(--warn);
+}
+
+/* ---------- 21.2b 后台：自动备份状态（B5） ---------- */
+
+.backup-state {
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.backup-state__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.backup-state__badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.backup-state__badge--ok {
+  color: var(--accent);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: rgba(var(--accent-rgb), 0.09);
+}
+
+.backup-state__badge--warn {
+  color: var(--warn);
+  border: 1px solid rgba(var(--warn-rgb), 0.35);
+  background: rgba(var(--warn-rgb), 0.09);
+}
+
+.backup-state__badge--bad {
+  color: var(--danger);
+  border: 1px solid rgba(var(--danger-rgb), 0.35);
+  background: rgba(var(--danger-rgb), 0.09);
+}
+
+.backup-state__badge--idle {
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+}
+
+.backup-state__when {
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.backup-state__hint {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.backup-state__note,
+.backup-state__meta {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.backup-state__alert {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--warn-rgb), 0.28);
+  background: rgba(var(--warn-rgb), 0.08);
+  color: var(--warn);
+  font-size: 0.78rem;
+  line-height: 1.7;
+}
+
+.admin-toolbar--wrap {
+  flex-wrap: wrap;
+}
+
+.field--inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field--inline .field__label {
+  margin: 0;
+  white-space: nowrap;
+}
+
 .side-note {
   margin: 0 0 12px;
   font-size: 0.79rem;

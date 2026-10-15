@@ -822,7 +822,10 @@ BEGIN
     v := v || jsonb_build_object('subscribers', v_tmp);
 
     SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb) INTO v_tmp
-      FROM (SELECT email, note, created_at FROM public.comment_banned_words ORDER BY created_at LIMIT v_cap) t;
+      /* 敏感词表只有 word / created_at —— 原来这里抄了上面 admin_emails 段的
+       * `email, note`，'interactions' / 'all' 整条会报 42703。
+       * 与备份 worker 用的 backup_export 是同一份抄来的片段，两处一起修。 */
+      FROM (SELECT word, created_at FROM public.comment_banned_words ORDER BY created_at LIMIT v_cap) t;
     v := v || jsonb_build_object('banned_words', v_tmp);
   END IF;
 

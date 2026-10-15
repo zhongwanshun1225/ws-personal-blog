@@ -1224,5 +1224,8 @@
     isReady: function () { return inited; },
     /* 供个人中心等外部页面复用同一套评论渲染（代码块 / 提及 / 投票） */
     renderBody: renderCommentBody,
+    /* 回归测试出口：commentItem 是闭包，外部抽不出来（依赖 esc / t / withinEditWindow 等
+     * 同层函数）。只导出引用、不改任何线上行为；`.preview/comment-thread-test.mjs` 用它。 */
+    __test: { commentItem: commentItem },
   };
 })();

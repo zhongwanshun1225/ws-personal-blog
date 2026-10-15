@@ -446,7 +446,172 @@
       loadReports();
       loadEmailRequests();
     }
+    if (name === 'data') loadBackupPanel();
   }
+
+  /* ---------------- 自动备份与异地留存（B5） ---------------- */
+
+  /* 后台只看策略与心跳；真正的执行在云函数 ws-backup 里（每天定时跑）。
+     页面能改策略，但改不了「有没有真的跑」—— 所以心跳是这里最重要的一块：
+     静默定时任务如果没有心跳，坏了也没人知道。 */
+
+  function backupHourOptions() {
+    var sel = q('[data-backup-hour]');
+    if (!sel || sel.options.length) return;
+    for (var h = 0; h < 24; h++) {
+      var o = document.createElement('option');
+      o.value = String(h);
+      o.textContent = (h < 10 ? '0' + h : String(h)) + ':00';
+      sel.appendChild(o);
+    }
+  }
+
+  function backupKeepOptions() {
+    var sel = q('[data-backup-keep]');
+    if (!sel || sel.options.length) return;
+    [7, 14, 30, 60, 90].forEach(function (n) {
+      var o = document.createElement('option');
+      o.value = String(n);
+      o.textContent = n + ' 份';
+      sel.appendChild(o);
+    });
+  }
+
+  /* 心跳状态 → 中文说明 + 严重度。云函数三态：ok / ok_offsite_failed / failed，
+     另有 disabled / probe / export_error 等。 */
+  var BACKUP_STATE = {
+    ok: { label: '正常', level: 'ok', hint: '最近一次备份成功，已留下副本' },
+    ok_offsite_failed: { label: '部分成功', level: 'warn', hint: '快照已生成，但异地投递失败——只有本站副本' },
+    failed: { label: '无副本', level: 'bad', hint: '最近一次没有任何副本落地，请检查策略与异地配置' },
+    disabled: { label: '已关闭', level: 'idle', hint: '策略里关闭了自动备份' },
+    probe: { label: '仅体检', level: 'idle', hint: '手动触发过一次配置体检' },
+    export_error: { label: '导出失败', level: 'bad', hint: '调用导出函数时报错' },
+    export_rejected: { label: '导出被拒', level: 'bad', hint: '共享密钥可能已被轮换' },
+    record_error: { label: '登记失败', level: 'bad', hint: '快照没能写入清单' }
+  };
+
+  function backupAgo(iso) {
+    if (!iso) return '从未运行';
+    var t = Date.parse(iso);
+    if (isNaN(t)) return String(iso);
+    var mins = Math.floor((Date.now() - t) / 60000);
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return mins + ' 分钟前';
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + ' 小时前';
+    return Math.floor(hrs / 24) + ' 天前';
+  }
+
+  function renderBackupState(data) {
+    var box = q('[data-backup-state]');
+    if (!box) return;
+    var st = (data.worker_state || {}).status || '';
+    var meta = BACKUP_STATE[st] || {
+      label: st ? '未知（' + st + '）' : '尚未运行',
+      level: st ? 'warn' : 'idle',
+      hint: st ? '看到了意料之外的状态值' : '定时任务还没有跑过一次'
+    };
+    var last = data.last || null;
+
+    var html = '' +
+      '<div class="backup-state__row">' +
+      '<span class="backup-state__badge backup-state__badge--' + meta.level + '">' + esc(meta.label) + '</span>' +
+      '<span class="backup-state__when">' + esc(backupAgo((data.worker_state || {}).at)) + '</span>' +
+      '</div>' +
+      '<p class="backup-state__hint">' + esc(meta.hint) + '</p>';
+
+    if ((data.worker_state || {}).note) {
+      html += '<p class="backup-state__note mono">' + esc(data.worker_state.note) + '</p>';
+    }
+
+    var bits = [];
+    bits.push('快照共 <strong>' + (data.total || 0) + '</strong> 份');
+    bits.push('密钥' + (data.secret_set ? '<strong>已设置</strong>' : '<strong>未设置</strong>'));
+    bits.push('异地：<strong>' + esc(data.offsite === 'off' ? '未启用' : data.offsite) + '</strong>');
+    if (last) bits.push('最近：' + esc(last.created_at || '') + '（' + esc(last.kind || '') + '）');
+    html += '<p class="backup-state__meta">' + bits.join(' · ') + '</p>';
+
+    /* 没开异地就明确提示 —— 不能让站长误以为「已经在备份了」 */
+    if (data.offsite === 'off') {
+      html += '<p class="backup-state__alert">未启用异地留存：快照仍在同一个云环境里，' +
+        '环境整块丢失就一起没了。要真正「异地」，请把下面的异地留存设为 Webhook 或 S3。</p>';
+    }
+    box.innerHTML = html;
+
+    var warn = q('[data-backup-warn]');
+    if (warn) {
+      warn.hidden = data.secret_set === true;
+      warn.textContent = data.secret_set === true ? ''
+        : '尚未生成备份密钥：先把站点设置里的备份密钥填进云函数 ws-backup 的环境变量 BACKUP_WORKER_SECRET，否则它调不动导出接口。';
+    }
+  }
+
+  function loadBackupPanel() {
+    backupHourOptions();
+    backupKeepOptions();
+    if (typeof WSBlogCloud === 'undefined' || !WSBlogCloud) return;
+
+    api(WSBlogCloud.rpc('admin_backup_status'), '读取备份状态失败').then(function (data) {
+      if (!data) return;
+      var en = q('[data-backup-enabled]');
+      if (en) en.value = data.enabled === true ? 'true' : 'false';
+      var hr = q('[data-backup-hour]');
+      if (hr && data.hour !== undefined && data.hour !== null) hr.value = String(data.hour);
+      var kd = q('[data-backup-kind]');
+      if (kd && data.kind) kd.value = String(data.kind);
+      var kp = q('[data-backup-keep]');
+      if (kp && data.keep !== undefined && data.keep !== null) kp.value = String(data.keep);
+      var os = q('[data-backup-offsite]');
+      if (os && data.offsite) os.value = String(data.offsite);
+
+      var tm = q('[data-backup-status-time]');
+      if (tm) tm.textContent = '心跳 ' + backupAgo((data.worker_state || {}).at);
+
+      renderBackupState(data);
+    });
+  }
+
+  var backupRefresh = q('[data-backup-refresh]');
+  if (backupRefresh) backupRefresh.addEventListener('click', loadBackupPanel);
+
+  var backupSave = q('[data-backup-save]');
+  if (backupSave) backupSave.addEventListener('click', function () {
+    var btn = backupSave;
+    var fields = [
+      ['backup.enabled', q('[data-backup-enabled]')],
+      ['backup.hour', q('[data-backup-hour]')],
+      ['backup.kind', q('[data-backup-kind]')],
+      ['backup.keep', q('[data-backup-keep]')],
+      ['backup.offsite', q('[data-backup-offsite]')]
+    ];
+    /* 逐个保存：后端 admin_backup_setting 是按 key 单条白名单校验的 */
+    var chain = Promise.resolve();
+    var saved = 0;
+    fields.forEach(function (pair) {
+      var key = pair[0], el = pair[1];
+      if (!el) return;
+      var raw = el.value;
+      var val = raw;
+      if (key === 'backup.enabled') val = raw === 'true';
+      else if (key === 'backup.hour' || key === 'backup.keep') val = Number(raw);
+      chain = chain.then(function () {
+        return api(WSBlogCloud.rpc('admin_backup_setting', { p_key: key, p_value: val }),
+          '保存「' + key + '」失败').then(function (res) {
+          if (res && res.ok) saved++;
+        });
+      });
+    });
+    btn.disabled = true;
+    chain.then(function () {
+      btn.disabled = false;
+      setAdminStatus('备份策略已保存（' + saved + '/' + fields.length + ' 项）', 'ok');
+      loadBackupPanel();
+    }).catch(function () {
+      btn.disabled = false;
+      setAdminStatus('保存备份策略时出错，已保存 ' + saved + ' 项', 'error');
+      loadBackupPanel();
+    });
+  });
 
   qa('[data-admin-tab]').forEach(function (btn) {
     btn.addEventListener('click', function () {

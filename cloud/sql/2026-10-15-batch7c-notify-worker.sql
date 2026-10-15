@@ -57,7 +57,11 @@ BEGIN
   RETURN jsonb_build_object('ok', true, 'config', v_cfg);
 END
 $function$;
--- 不 GRANT 给任何角色：只有 worker 拿着共享密钥能调（与 claim/ack 同一套口径）
+-- ⚠️ 反直觉但必须：REST 通道（/.cloud/database/rest/rpc/）的服务端调用身份就是 anon。
+--    云函数没有用户 JWT，网关按匿名角色进来 —— 「REVOKE FROM anon」会让 worker 直接吃
+--    401 permission denied。安全边界不靠 GRANT，靠**函数体内的共享密钥校验**。
+--    （本文件线上实际授权一直带着 anon，此处补齐源码，避免源码与云端不一致。）
+-- 与 claim/ack 同一套口径：GRANT 到 anon，但函数内先验共享密钥
 
 -- ---------------------------------------------------------------------
 -- 2. 领取（修订版：修密钥比对 + 顺带回传投递配置）
@@ -115,7 +119,11 @@ BEGIN
 END
 $function$;
 
-REVOKE EXECUTE ON FUNCTION public.notify_outbox_claim(text, integer) FROM PUBLIC, anon, authenticated;
+-- ⚠️ 反直觉但必须：REST 通道（/.cloud/database/rest/rpc/）的服务端调用身份就是 anon。
+--    云函数没有用户 JWT，网关按匿名角色进来 —— 「REVOKE FROM anon」会让 worker 直接吃
+--    401 permission denied。安全边界不靠 GRANT，靠**函数体内的共享密钥校验**。
+--    （本文件线上实际授权一直带着 anon，此处补齐源码，避免源码与云端不一致。）
+GRANT EXECUTE ON FUNCTION public.notify_outbox_claim(text, integer) TO anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------
 -- 3. 回执（修订版：同样修密钥比对）
@@ -150,7 +158,11 @@ BEGIN
 END
 $function$;
 
-REVOKE EXECUTE ON FUNCTION public.notify_outbox_ack(text, bigint, boolean, text) FROM PUBLIC, anon, authenticated;
+-- ⚠️ 反直觉但必须：REST 通道（/.cloud/database/rest/rpc/）的服务端调用身份就是 anon。
+--    云函数没有用户 JWT，网关按匿名角色进来 —— 「REVOKE FROM anon」会让 worker 直接吃
+--    401 permission denied。安全边界不靠 GRANT，靠**函数体内的共享密钥校验**。
+--    （本文件线上实际授权一直带着 anon，此处补齐源码，避免源码与云端不一致。）
+GRANT EXECUTE ON FUNCTION public.notify_outbox_ack(text, bigint, boolean, text) TO anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------
 -- 4. 心跳：worker 是静默定时任务，没有痕迹就等于「看不见的管道」。
@@ -193,7 +205,7 @@ BEGIN
 END
 $function$;
 
-REVOKE EXECUTE ON FUNCTION public.notify_worker_beat(text, text, integer, integer, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.notify_worker_beat(text, text, integer, integer, text) TO anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------
 -- 5. 初始化共享密钥（如尚未设置）

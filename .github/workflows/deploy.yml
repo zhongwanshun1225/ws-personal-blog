@@ -30,8 +30,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Build site
         run: python build.py --clean
+
+      # 回归护栏（E1）：探针读的是 dist/ 产物，所以必须排在 Build 之后。
+      # 清单在 tests/run-tests.mjs 里维护，加探针不用改本文件。
+      # 依赖 headless Chrome 的断言在找不到浏览器时会自行 SKIP（不动退出码），
+      # 因此 ubuntu-latest 上没有 Chrome 也能跑完，只是少一层 DOM 覆盖。
+      - name: Smoke tests
+        run: node tests/run-tests.mjs
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
