@@ -1042,6 +1042,101 @@
     });
   })();
 
+  /* ================= 链接预取：缩短「点击 → 新页面出现」的等待 =================
+     本站是多页静态站，每次跳转都要重新下载一份 HTML + 解析渲染。
+     切换时那「白屏一下」的时长，一多半就是这段网络往返。
+
+     做法：用户把鼠标停在站内链接上（或触摸开始）时，提前把目标 HTML 拉进浏览器缓存。
+     等到真正点击时页面已在缓存里，导航几乎是瞬时的 —— 与上面的 View Transition
+     叠加后，「点一下 → 新页面淡入」就连成一片，不再有中间空白。
+
+     刻意保守的几处（这里错一步就会拖慢全站或造成无谓请求）：
+     · 只预取**同源 + HTML 页面**：脚本、图片、RSS、外链、锚点、下载链接一律跳过；
+     · 只在**用户有明确意图**时触发（悬停 / 触摸 / 键盘聚焦），不做「进页面就预取全部链接」那种
+       一次性几十个请求的做法 —— 那会抢首屏带宽，反而更慢；
+     · 悬停后**等一小会儿**再发请求：鼠标只是从链接上扫过不该触发；
+     · 同一 URL 只取一次（用 Set 记账），失败静默 —— 预取是纯优化，绝不能影响正常导航；
+     · 省流模式 / 慢速连接下整体关闭（saveData 或 2G）；
+     · 用 `<link rel="prefetch">` 而非 fetch()：交给浏览器调度，优先级低、不占关键路径，
+       且命中后能直接被后续导航复用（fetch 还要自己管 HTTP 缓存）。
+     ==================================================================== */
+  (function prefetchOnIntent() {
+    // 支持度与「该不该省流量」的前置判断，任一不满足就整体不启用
+    var conn = navigator.connection;
+    if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) return;
+
+    var seen = Object.create(null);
+    var hoverTimer = null;
+    var HOVER_DELAY = 65; // ms：略长于鼠标扫过的停留，短到几乎无感
+
+    function shouldPrefetch(a) {
+      if (!a || !a.href) return false;
+      // 带 target/download/rel=external 的、锚点跳转的都不是「切换页面」
+      if (a.hasAttribute('download')) return false;
+      var rel = (a.getAttribute('rel') || '').toLowerCase();
+      if (rel.indexOf('external') >= 0 || rel.indexOf('nofollow') >= 0) return false;
+      if (a.target && a.target !== '_self') return false;
+
+      var url;
+      try {
+        url = new URL(a.href, location.href);
+      } catch (e) {
+        return false;
+      }
+      if (url.origin !== location.origin) return false;
+      // 纯锚点（#foo）是页内跳转，不需要新页面
+      if (url.pathname === location.pathname && url.search === location.search && url.hash) return false;
+      // 只预取「看起来是页面」的路径：去掉 query/hash 后以 .html 结尾或是目录
+      var p = url.pathname;
+      if (!/\.html?$/i.test(p) && !/\/$/.test(p)) return false;
+      // 后台 / 登录 / 个人中心等需要鉴权的页面不预取：
+      // 未登录时它们会先渲染登录页，预取反而没有意义，还会多打一次 RPC
+      if (/\/(admin|write|account|login|notifications|preview|subscribe)\.html?$/i.test(p)) return false;
+      return true;
+    }
+
+    function prefetch(a) {
+      if (!shouldPrefetch(a)) return;
+      var key = a.href;
+      if (seen[key]) return;
+      seen[key] = true;
+
+      var link = doc.createElement('link');
+      link.rel = 'prefetch';
+      link.href = key;
+      // as=document 让浏览器按「导航」语义处理（会被 HTTP 缓存复用）
+      link.as = 'document';
+      // 预取失败是常态（断网、被取消），不要冒泡成控制台报错
+      link.onerror = function () {
+        delete seen[key];
+      };
+      (doc.head || doc.documentElement).appendChild(link);
+    }
+
+    function onPointerOver(e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(function () {
+        prefetch(a);
+      }, HOVER_DELAY);
+    }
+
+    function onIntent(e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (a) prefetch(a);
+    }
+
+    doc.addEventListener('pointerover', onPointerOver, { passive: true });
+    // 触摸/键盘意图没有「悬停」阶段，直接预取（仍受 shouldPrefetch 约束）
+    doc.addEventListener('touchstart', onIntent, { passive: true });
+    doc.addEventListener('focusin', onIntent);
+    // 指针离开链接时取消待发的预取，避免扫过一串链接触发一堆请求
+    doc.addEventListener('pointerout', function () {
+      clearTimeout(hoverTimer);
+    }, { passive: true });
+  })();
+
   /* ================= 静态站点提示（localhost 之外的 file:// 场景） ================= */
   (function () {
     if (window.location.protocol !== 'file:') return;

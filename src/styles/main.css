@@ -138,6 +138,14 @@ html {
   scroll-behavior: smooth;
   scroll-padding-top: calc(var(--header-h) + 20px);
   -webkit-text-size-adjust: 100%;
+  /* 画布底色必须钉在 html 上，不能只给 body：
+     · body 的背景只覆盖内容盒，「内容不满一屏」时下方露出的仍是 html 的底色；
+     · 浏览器在导航开始前、View Transition 截取快照时用的也是 html 的画布色。
+       若这里不设，暗色主题下会先露出 UA 默认的白色 —— 就是切换时那一下「闪白」。
+     与 body 同色，两者叠加不可见，仅作兜底。
+     color-scheme 不在这里重复声明：:root 已按主题给过 dark / light，
+     这里再写会与主题切换打架。 */
+  background: var(--bg);
 }
 
 body {
@@ -7235,4 +7243,63 @@ body.is-modal-open {
 
 .preview-body[hidden] {
   display: none;
+}
+
+/* ---------- 20 跨页面切换过渡（View Transitions） ----------
+   解决的问题：本站是静态多页站，每次点击链接都是**整页重载** ——
+   旧页面瞬间消失，新页面从白屏开始渲染。用户感知就是「闪一下」，
+   慢网下白屏更久，这是页面切换最主要的卡顿来源。
+
+   做法：用跨文档 View Transitions（`@view-transition { navigation: auto }`）。
+   浏览器在导航时保留旧页面截图、新页面渲染好后交叉淡入淡出，
+   全程仍是普通的多页导航 —— 不引入前端路由、不改变任何既有行为，
+   不支持该特性的浏览器（Firefox / 旧版 Safari）自动退回原来的直接跳转，
+   **零副作用**。
+
+   细节取舍：
+   - 时长 180ms、只淡入淡出、不加位移 —— 切换要「稳」不要「花」，
+     过长的动画反而让人等；位移在长页面上容易看出错位。
+   - 只作用于根快照，具体元素不做具名过渡（避免列表顺序变化时乱飞）。
+   - 必须尊重 prefers-reduced-motion：前庭功能敏感的用户不该被强制看淡入淡出，
+     这里直接取消过渡，退回瞬时切换。 */
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  /* 交叉淡化时两层叠加，混用 mix-blend 会让暗色主题下的中灰发白，
+     这里强制普通合成，保证新旧两层各自按自己的主题色渲染 */
+  mix-blend-mode: normal;
+}
+
+/* 旧页面稍快淡出，避免两层同时半透明时文字「双影」 */
+::view-transition-old(root) {
+  animation-name: ws-vt-fade-out;
+}
+
+::view-transition-new(root) {
+  animation-name: ws-vt-fade-in;
+}
+
+@keyframes ws-vt-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes ws-vt-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 尊重系统「减少动态效果」：取消交叉淡化，变成瞬时切换 */
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
 }

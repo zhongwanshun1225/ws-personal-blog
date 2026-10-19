@@ -41,6 +41,10 @@ const SUITES = [
    * 2026-10-19 CI 连挂三次，就是因为这条规则的缺陷只在有 Chrome 的机器上暴露，
    * 本地恒 SKIP。用构造样本把它钉死，两侧都测（滤得干净 + 不漏真错）。 */
   'chrome-noise-test.mjs',
+  /* 页面切换流畅度：View Transitions / 链接预取 / 画布底色。
+   * 这几处改动都不报错、不影响功能，坏了只表现为「切换变卡」——
+   * 没有探针盯着，很容易被后续改动悄悄弄坏。 */
+  'page-transition-test.mjs',
   'batch3-smoke.mjs',
   'batch3-notify-render.mjs',
   'batch4-smoke.mjs',
