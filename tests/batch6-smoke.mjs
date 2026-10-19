@@ -15,7 +15,7 @@ import path from 'node:path';
 
 const PORT = 4208;
 const ROOT = path.resolve(import.meta.dirname, '..', 'dist');
-import { probeChrome, resolveChrome } from './_serve.mjs';
+import { probeChrome, resolveChrome, filterPageErrors } from './_serve.mjs';
 /* Chrome 路径解析 + 真·可用性探测（见 _serve.mjs）：探测不过就置空 ——
  * 依赖 DOM 的断言整段跳过，静态断言照跑。 */
 const CHROME = await probeChrome(resolveChrome());
@@ -336,13 +336,9 @@ if (!CHROME) {
 } else for (const page of ['/', '/login.html', '/account.html', '/admin.html', '/notifications.html',
                     '/posts/400-lines-static-site-generator.html']) {
   const { out, err } = await runChrome(BASE + page);
-  const noise = err
-    .split('\n')
-    .filter((l) => /SEVERE|ERROR|Uncaught|SyntaxError|TypeError|ReferenceError/i.test(l))
-    .filter((l) => !/load_error_reporter|Extension error|extensions\\/i.test(l))
-    /* 未登录时个人中心/后台的云端拒绝属于预期（本地 Origin 不在白名单） */
-    .filter((l) => !/403|Failed to load resource|net::ERR|favicon/i.test(l))
-    .join('\n');
+  // 过滤规则见 _serve.mjs::filterPageErrors —— 关键是剔掉 Chrome 自身进程日志
+  // （CI/Linux 上的 dbus / GPU / sandbox 噪音），只留页面 JS 真正抛的错。
+  const noise = filterPageErrors(err);
   check(`${page} 无未捕获异常`, noise.trim() === '', noise.slice(0, 300));
   check(`${page} 有内容`, out.includes('<body'));
 }

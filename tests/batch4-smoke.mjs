@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { probeChrome, resolveChrome } from './_serve.mjs';
+import { probeChrome, resolveChrome, filterPageErrors } from './_serve.mjs';
 
 const PORT = 4207;
 const ROOT = path.resolve(import.meta.dirname, '..', 'dist');
@@ -179,14 +179,9 @@ if (!CHROME) {
   console.log('  SKIP 未找到 Chrome（设 CHROME_BIN 可指定）— 静态断言已覆盖模板/脚本层面');
 } else for (const page of ['/', '/write.html', '/account.html', '/admin.html']) {
   const { out, err } = await runChrome(BASE + page);
-  const noise = err
-    .split('\n')
-    .filter((l) => /SEVERE|ERROR|Uncaught|SyntaxError|TypeError|ReferenceError/i.test(l))
-    // Chrome 自身的扩展版本告警与页面无关
-    .filter((l) => !/load_error_reporter|Extension error|extensions\\/i.test(l))
-    // 未登录时后台/个人中心的云端 403 属于预期（本地 Origin 不在白名单）
-    .filter((l) => !/403|Failed to load resource|net::ERR|favicon/i.test(l))
-    .join('\n');
+  // 过滤规则见 _serve.mjs::filterPageErrors —— 关键是剔掉 Chrome 自身进程日志
+  // （CI/Linux 上的 dbus / GPU / sandbox 噪音），只留页面 JS 真正抛的错。
+  const noise = filterPageErrors(err);
   check(`${page} 无未捕获异常`, noise.trim() === '', noise.slice(0, 300));
   check(`${page} 有内容`, out.includes('<body'));
 }

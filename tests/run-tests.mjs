@@ -37,6 +37,10 @@ const SUITES = [
   /* E4 构建缓存：纯文件系统 + 源码契约，不需要浏览器。
    * 放这里的理由是它的失败模式极隐蔽 —— 缓存写错不会报错，只会少写文件。 */
   'build-cache-test.mjs',
+  /* Chrome 噪音过滤：纯字符串样本，不需要浏览器 —— 这正是要点。
+   * 2026-10-19 CI 连挂三次，就是因为这条规则的缺陷只在有 Chrome 的机器上暴露，
+   * 本地恒 SKIP。用构造样本把它钉死，两侧都测（滤得干净 + 不漏真错）。 */
+  'chrome-noise-test.mjs',
   'batch3-smoke.mjs',
   'batch3-notify-render.mjs',
   'batch4-smoke.mjs',

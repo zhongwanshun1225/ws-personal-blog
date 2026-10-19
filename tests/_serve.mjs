@@ -53,6 +53,42 @@ export function startStaticServer(port = 4199, root = DIST) {
 }
 
 /**
+ * 从无头 Chrome 的 stderr 里挑出「真正的页面级报错」。
+ *
+ * 为什么需要它：直接拿 `/ERROR|SEVERE/i` 过滤会把 **Chrome 自身的进程日志**当成页面报错。
+ * 最典型的是 Linux/CI 上的
+ *   [2755:2776:1015/153541.545689:ERROR:dbus/bus.cc:405] Failed to connect to the bus: ...
+ * ——这是 headless 容器缺 D-Bus 的固有噪音，与站点无关，却会让「无未捕获异常」整条断言变红。
+ *
+ * 判据不是字符串黑名单（黑名单永远漏），而是**日志行的结构**：
+ *   · Chrome 进程日志：`[pid:tid:MMDD/HHMMSS.micro:SEVERITY:文件:行号] 正文`
+ *     —— 方括号内必含「pid:tid:时间戳」三段式，结尾是 `文件:行号`；
+ *   · 页面 JS 报错（console / Uncaught）：Chrome 打印成
+ *     `[MMDD/HHMMSS.micro:SEVERITY:CONSOLE(行号)] "原文"` 或直接 `Uncaught ...`，
+ *     方括号内**没有 pid:tid 前缀**。
+ * 所以先按「进程日志」形态剔掉，再对剩余行做关键字匹配。
+ *
+ * 另外保留原有的几类显式豁免（扩展告警、本地 403/网络错误、favicon），
+ * 它们即便形态上是页面日志也与被测能力无关。
+ */
+export function filterPageErrors(stderr) {
+  // [1234:5678:1015/153541.545689:ERROR:dbus/bus.cc:405]
+  // 级别集合务必包含 SEVERE —— Chrome 的 gcm/engine.cc 等模块就用它，漏掉会漏滤。
+  const CHROME_PROCESS_LOG =
+    /^\[\d+:\d+:[0-9]{4}\/[0-9.]+:(?:VERBOSE|INFO|WARNING|ERROR|SEVERE|FATAL):[^\]]*\]/;
+  return stderr
+    .split('\n')
+    .filter((l) => /SEVERE|ERROR|Uncaught|SyntaxError|TypeError|ReferenceError/i.test(l))
+    // ① Chrome 自身进程日志（GPU / dbus / sandbox / GCM / updater …）—— 与页面无关
+    .filter((l) => !CHROME_PROCESS_LOG.test(l.trim()))
+    // ② 未登录时后台/个人中心的云端 403 属于预期（Origin 白名单），本地必现
+    .filter((l) => !/403|Failed to load resource|net::ERR|favicon/i.test(l))
+    // ③ 显式豁免：扩展/加载器告警
+    .filter((l) => !/load_error_reporter|Extension error|extensions\//i.test(l))
+    .join('\n');
+}
+
+/**
  * Chrome 路径：本地 Windows 固定路径优先，其次常见 Linux/macOS 位置；
  * 都找不到返回空串 —— 调用方据此整段跳过 DOM 断言（CI 上不算失败）。
  */
