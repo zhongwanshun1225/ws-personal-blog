@@ -118,7 +118,22 @@ ${STUB}
 </script>
 </body></html>`;
 
-fs.writeFileSync(`${DIST}/__probe_notify.html`, harness);
+/* 探针页写进 dist/ 是因为要让它和站点共用同一套相对路径与脚本。
+ * 但它必须**走得干净**：dist/ 是发布产物，残留文件会被 sites_deploy 原样带上线
+ * （2026-10-19 实拍到线上产物里躺着 __probe_notify.html）。
+ * 所以凡是有可能提前退出（SKIP / 取不到结果 / 断言失败）的地方都要清理，
+ * 且清理放在写文件之后立刻登记，避免以后加分支时又漏。 */
+const PROBE_HTML = `${DIST}/__probe_notify.html`;
+fs.writeFileSync(PROBE_HTML, harness);
+
+let cleaned = false;
+function cleanProbe() {
+  if (cleaned) return;
+  cleaned = true;
+  try { fs.unlinkSync(PROBE_HTML); } catch (e) { /* 已经不在了就算了 */ }
+}
+process.on('exit', cleanProbe);
+process.on('SIGINT', () => { cleanProbe(); process.exit(130); });
 
 function runChrome(url) {
   return new Promise((resolve) => {
